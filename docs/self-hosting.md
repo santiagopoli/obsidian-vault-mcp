@@ -139,7 +139,12 @@ Create a protected GitHub Environment named `production`. Add these repository o
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 
-Create a narrowly scoped Cloudflare API token that can edit Workers in only the target account and, when using a custom domain, only the required zone.
+Create a narrowly scoped Cloudflare API token with exactly these policies:
+
+- Entire target account: **Workers Scripts → Write**.
+- Specified domain containing the MCP hostname: **Workers Routes → Write**.
+
+The deployment workflow does not need DNS, KV Storage, billing, or access to any other Cloudflare product. Creating the OAuth KV namespace remains a one-time administrator action outside CI.
 
 Add these GitHub Actions variables:
 

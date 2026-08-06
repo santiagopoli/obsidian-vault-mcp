@@ -40,7 +40,7 @@ Deployments handling unusually sensitive metadata can disable or shorten graph c
 
 ## Operational controls
 
-- Use a protected deployment environment and least-privilege Cloudflare API token.
+- Use a protected deployment environment and a Cloudflare API token limited to **Workers Scripts → Write** for the target account plus **Workers Routes → Write** for the target domain.
 - Keep runtime GitHub credentials only in Cloudflare secrets.
 - Do not deploy pull-request code with production secrets.
 - Review dependency audit results before deployment.
