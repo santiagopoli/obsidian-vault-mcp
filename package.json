@@ -1,0 +1,36 @@
+{
+  "name": "obsidian-vault-mcp-server",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "config:production": "node scripts/render-production-config.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "bun run typecheck && bun test && bun run audit && bun run dry-run",
+    "audit": "bun audit --production",
+    "dry-run": "wrangler deploy --dry-run --config wrangler.example.jsonc --outdir .wrangler/dry-run",
+    "types": "wrangler types worker-configuration.d.ts --include-runtime false"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "0.10.1",
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.20.1",
+    "hono": "4.13.0",
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
+  },
+  "overrides": {
+    "@hono/node-server": "2.1.0",
+    "hono": "4.13.0",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260729.1",
+    "typescript": "6.0.3",
+    "vitest": "4.0.18",
+    "wrangler": "4.119.0"
+  }
+}
