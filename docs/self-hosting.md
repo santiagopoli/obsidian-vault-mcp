@@ -146,7 +146,7 @@ Add these GitHub Actions variables:
 - `AUTO_DEPLOY_ENABLED=true`
 - `WORKER_NAME`
 - `ALLOWED_GITHUB_USER_ID`
-- `GITHUB_REPOSITORIES`
+- `VAULT_REPOSITORIES` — copied into the Worker's `GITHUB_REPOSITORIES` allowlist during deployment.
 - `VAULT_ACCESS`
 - `OAUTH_KV_NAMESPACE_ID`
 - `CUSTOM_DOMAIN` — omit for Workers.dev.

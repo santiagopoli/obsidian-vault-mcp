@@ -6,7 +6,7 @@ const hostnamePattern = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.
 
 const workerName = optional("WORKER_NAME") ?? "obsidian-vault-mcp";
 const allowedUserId = required("ALLOWED_GITHUB_USER_ID");
-const repositories = required("GITHUB_REPOSITORIES").split(",").map((value) => value.trim()).filter(Boolean);
+const repositories = required("VAULT_REPOSITORIES").split(",").map((value) => value.trim()).filter(Boolean);
 const vaultAccess = optional("VAULT_ACCESS") ?? "read";
 const omitIssuer = optional("OMIT_AUTHORIZATION_RESPONSE_ISS") ?? "false";
 const oauthKvNamespaceId = required("OAUTH_KV_NAMESPACE_ID");
@@ -15,7 +15,7 @@ const customDomain = optional("CUSTOM_DOMAIN");
 if (!workerNamePattern.test(workerName)) fail("WORKER_NAME must be a valid Cloudflare Worker name");
 if (!/^\d+$/.test(allowedUserId)) fail("ALLOWED_GITHUB_USER_ID must be an immutable numeric GitHub user ID");
 if (repositories.length === 0 || repositories.some((repository) => !repositoryPattern.test(repository))) {
-  fail("GITHUB_REPOSITORIES must be a comma-separated owner/repository allowlist");
+  fail("VAULT_REPOSITORIES must be a comma-separated owner/repository allowlist");
 }
 if (vaultAccess !== "read" && vaultAccess !== "write") fail("VAULT_ACCESS must be read or write");
 if (omitIssuer !== "true" && omitIssuer !== "false") fail("OMIT_AUTHORIZATION_RESPONSE_ISS must be true or false");
