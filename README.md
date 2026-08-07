@@ -41,7 +41,7 @@ Follow the complete [self-hosting guide](docs/self-hosting.md). The short versio
 4. Copy `wrangler.example.jsonc` to the ignored `wrangler.jsonc` and enter only non-secret deployment values.
 5. Upload the three runtime secrets to Cloudflare and deploy.
 6. Connect an MCP client to `https://your-host/mcp` and approve its consent screen.
-7. After the manual deployment passes its smoke tests, enable the protected GitHub Actions deployment.
+7. After the manual deployment passes its smoke tests, connect Cloudflare Workers Builds to the fork or enable the protected GitHub Actions alternative.
 
 ## Development
 

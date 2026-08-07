@@ -132,6 +132,19 @@ Test in this order:
 
 ## 8. Automatic deployment from GitHub
 
+### Cloudflare Workers Builds (recommended)
+
+In the existing Worker's **Settings → Build**, connect the Cloudflare GitHub App to only this repository. Select `main` as the production branch and disable builds for non-production branches unless preview deployments are required.
+
+Use these commands:
+
+- Build: `bun install --frozen-lockfile && bun run check`
+- Deploy: `bun run config:production && bunx wrangler deploy --config .wrangler/production.jsonc`
+
+Add the non-secret deployment values listed below as Cloudflare build variables. Workers Builds creates and manages its deployment credential; runtime GitHub credentials remain separate Worker secrets. A push to `main` now runs all checks before deployment.
+
+### GitHub Actions alternative
+
 The deploy workflow is disabled until repository variable `AUTO_DEPLOY_ENABLED` equals `true`.
 
 Create a protected GitHub Environment named `production`. Add these repository or environment secrets:
