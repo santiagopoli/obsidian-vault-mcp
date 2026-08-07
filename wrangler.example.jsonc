@@ -10,10 +10,15 @@
     "ALLOWED_GITHUB_USER_ID": "12345678",
     "GITHUB_REPOSITORIES": "example-user/example-vault",
     "VAULT_ACCESS": "read",
-    "OMIT_AUTHORIZATION_RESPONSE_ISS": "false"
+    "OMIT_AUTHORIZATION_RESPONSE_ISS": "false",
+    "GITHUB_WEBHOOK_HOOK_ID": "123456789",
+    "GITHUB_WEBHOOK_REPOSITORY_ID": "123456789",
+    "GITHUB_WEBHOOK_DEFAULT_BRANCH": "main",
+    "GITHUB_WEBHOOK_VAULT": "example-user/example-vault",
+    "AUTOMATIONS_YAML": "version: 1\nautomations: []\n"
   },
   "secrets": {
-    "required": ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "GITHUB_VAULT_TOKEN"]
+    "required": ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "GITHUB_VAULT_TOKEN", "GITHUB_WEBHOOK_SECRET"]
   },
   "kv_namespaces": [
     {
@@ -21,6 +26,25 @@
       "id": "00000000000000000000000000000000"
     }
   ],
+  "d1_databases": [
+    {
+      "binding": "EVENT_DB",
+      "database_name": "obsidian-vault-events",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "queues": {
+    "producers": [{ "binding": "EVENTS_QUEUE", "queue": "obsidian-vault-events" }],
+    "consumers": [{
+      "queue": "obsidian-vault-events",
+      "max_batch_size": 10,
+      "max_retries": 5,
+      "max_concurrency": 1,
+      "dead_letter_queue": "obsidian-vault-events-dlq"
+    }]
+  },
+  "triggers": { "crons": ["*/15 * * * *"] },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 0.1

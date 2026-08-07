@@ -82,13 +82,35 @@ export async function getMarkdownTree(
   vault: VaultConfig,
   prefix?: string,
 ): Promise<MarkdownTree> {
-  const repository = await githubFetch<{ default_branch: string }>(
+  const repository = await getRepositoryMetadata(token, vault);
+  return getMarkdownTreeAtRevision(token, vault, repository.defaultBranch, prefix);
+}
+
+export interface GitHubRepositoryMetadata {
+  id: string;
+  defaultBranch: string;
+}
+
+export async function getRepositoryMetadata(token: string, vault: VaultConfig): Promise<GitHubRepositoryMetadata> {
+  const repository = await githubFetch<{ id: number; default_branch: string }>(
     token,
     `/repos/${vault.owner}/${vault.repo}`,
   );
+  return { id: String(repository.id), defaultBranch: repository.default_branch };
+}
+
+export async function getMarkdownTreeAtRevision(
+  token: string,
+  vault: VaultConfig,
+  revision: string,
+  prefix?: string,
+): Promise<MarkdownTree> {
+  if (!/^[0-9a-f]{40}$/i.test(revision) && !/^[A-Za-z0-9._/-]{1,255}$/.test(revision)) {
+    throw new Error("GitHub tree revision is invalid");
+  }
   const tree = await githubFetch<{ sha: string; tree: GitHubTreeItem[]; truncated: boolean }>(
     token,
-    `/repos/${vault.owner}/${vault.repo}/git/trees/${encodeURIComponent(repository.default_branch)}?recursive=1`,
+    `/repos/${vault.owner}/${vault.repo}/git/trees/${encodeURIComponent(revision)}?recursive=1`,
   );
   if (tree.truncated) {
     throw new Error("Vault tree is too large for a recursive GitHub listing");

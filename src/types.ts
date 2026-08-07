@@ -1,5 +1,13 @@
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
+export interface VaultEventQueueMessage {
+  deliveryId: string;
+  repositoryId: string;
+  vault: string;
+  previousRevision?: string;
+  afterRevision?: string;
+}
+
 export interface Env {
   ALLOWED_GITHUB_USER_ID: string;
   GITHUB_REPOSITORIES: string;
@@ -8,7 +16,15 @@ export interface Env {
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
   GITHUB_VAULT_TOKEN: string;
+  GITHUB_WEBHOOK_SECRET: string;
+  GITHUB_WEBHOOK_HOOK_ID: string;
+  GITHUB_WEBHOOK_REPOSITORY_ID: string;
+  GITHUB_WEBHOOK_DEFAULT_BRANCH: string;
+  GITHUB_WEBHOOK_VAULT: string;
+  AUTOMATIONS_YAML?: string;
   OAUTH_KV: KVNamespace;
+  EVENT_DB: D1Database;
+  EVENTS_QUEUE: Queue<VaultEventQueueMessage>;
   OAUTH_PROVIDER: OAuthHelpers;
 }
 

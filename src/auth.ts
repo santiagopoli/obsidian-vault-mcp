@@ -4,7 +4,8 @@ import {
   type ClientInfo,
 } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
-import { allowedGitHubUserId, configuredVaults, vaultAccess } from "./config";
+import { allowedGitHubUserId, configuredVaults, resolveVault, vaultAccess } from "./config";
+import { parseAutomationConfig } from "./automations/config";
 import { consumeConsentState, storeConsentState } from "./consentState";
 import { isLoopbackRedirect, loopbackHandoffPage } from "./loopbackRedirect";
 import { selectGrantedScopes, writeScope } from "./authPolicy";
@@ -201,10 +202,16 @@ if (form) {
   });
 }`, 200, { "Content-Type": "text/javascript; charset=utf-8" }));
 
-app.get("/healthz", (context) => {
+app.get("/healthz", async (context) => {
   allowedGitHubUserId(context.env);
   configuredVaults(context.env);
   vaultAccess(context.env);
+  resolveVault(context.env, context.env.GITHUB_WEBHOOK_VAULT);
+  if (!/^\d+$/.test(context.env.GITHUB_WEBHOOK_HOOK_ID) || !/^\d+$/.test(context.env.GITHUB_WEBHOOK_REPOSITORY_ID)) {
+    throw new Error("Webhook policy IDs must be numeric");
+  }
+  parseAutomationConfig(context.env.AUTOMATIONS_YAML ?? "version: 1\nautomations: []\n");
+  await context.env.EVENT_DB.prepare("SELECT 1 FROM vault_states LIMIT 1").first();
   return context.json({ ok: true, service: "obsidian-vault-mcp" });
 });
 

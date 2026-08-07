@@ -4,7 +4,7 @@ This guide creates one private MCP server for one GitHub account. Multiple vault
 
 ## Prerequisites
 
-- A Cloudflare account with Workers and KV.
+- A Cloudflare account with Workers, KV, D1, and Queues.
 - A GitHub account that owns or can access the vault repositories.
 - Bun 1.3 or newer.
 - An MCP client that supports remote Streamable HTTP and OAuth.
@@ -30,15 +30,18 @@ The MCP endpoint is:
 https://YOUR-ORIGIN/mcp
 ```
 
-## 2. Create Cloudflare KV
+## 2. Create Cloudflare storage and queues
 
 ```sh
 bun install --frozen-lockfile
 bunx wrangler login
 bunx wrangler kv namespace create OAUTH_KV
+bunx wrangler d1 create obsidian-vault-events
+bunx wrangler queues create obsidian-vault-events
+bunx wrangler queues create obsidian-vault-events-dlq
 ```
 
-Copy the returned 32-character namespace ID. KV stores OAuth state, grants, and hashed or encrypted token material. It does not store vault note contents.
+Copy the returned 32-character KV namespace ID and D1 database UUID. KV stores OAuth state, grants, and hashed or encrypted token material. D1 stores delivery metadata, vault revisions, derived note events, and automation run status. Neither stores vault note contents.
 
 ## 3. Register a GitHub OAuth App
 
@@ -83,6 +86,12 @@ Edit these non-secret values:
 - `GITHUB_REPOSITORIES`: comma-separated `owner/repository` values.
 - `VAULT_ACCESS`: `read` or `write`.
 - `OAUTH_KV.id`: the namespace ID from step 2.
+- `EVENT_DB.database_id`: the D1 database UUID from step 2.
+- `GITHUB_WEBHOOK_REPOSITORY_ID`: the immutable numeric repository ID (`gh api repos/OWNER/REPOSITORY --jq .id`).
+- `GITHUB_WEBHOOK_DEFAULT_BRANCH`: normally `main`.
+- `GITHUB_WEBHOOK_VAULT`: the matching `owner/repository` allowlist entry.
+
+Leave `GITHUB_WEBHOOK_HOOK_ID` as a temporary positive number until the webhook is created in step 7. Keep the default Queue names unless they conflict with existing resources in your account.
 
 For a custom domain, set `workers_dev` to `false` and add:
 
@@ -100,17 +109,35 @@ Create an ignored `.env.production` file:
 GITHUB_CLIENT_ID=...
 GITHUB_CLIENT_SECRET=...
 GITHUB_VAULT_TOKEN=...
+GITHUB_WEBHOOK_SECRET=...
 ```
 
-Deploy the code and encrypted secrets together:
+Generate `GITHUB_WEBHOOK_SECRET` with a cryptographically secure password generator. Do not reuse the OAuth client secret or repository token.
+
+Apply the D1 schema, then deploy the code and encrypted secrets:
 
 ```sh
+bunx wrangler d1 migrations apply obsidian-vault-events --remote --config wrangler.jsonc
 bunx wrangler deploy --config wrangler.jsonc --secrets-file .env.production
 ```
 
 Delete `.env.production` after the deployment. Future code deployments preserve existing Cloudflare secrets.
 
-## 7. Verify before connecting
+## 7. Create and verify the GitHub webhook
+
+In the canonical vault repository, open **Settings → Webhooks → Add webhook**:
+
+- Payload URL: `https://YOUR-ORIGIN/webhooks/github`
+- Content type: `application/json`
+- Secret: the exact `GITHUB_WEBHOOK_SECRET` uploaded to Cloudflare
+- Events: **Just the push event**
+- Active: enabled
+
+After saving, copy the numeric hook ID from the webhook URL or query it with the GitHub API. Replace `GITHUB_WEBHOOK_HOOK_ID` in `wrangler.jsonc` and deploy again without the secrets file. The initial `ping` may have reached the temporary hook policy; redeliver it from GitHub after the second deployment and require an HTTP `202` response.
+
+The hook is restricted by its secret, hook ID, immutable repository ID, canonical branch, and vault allowlist. Create a separate deployment for a repository owned by a different person.
+
+## 8. Verify before connecting
 
 ```sh
 curl --fail https://YOUR-ORIGIN/healthz
@@ -119,7 +146,7 @@ curl -i -X POST https://YOUR-ORIGIN/mcp \
   --data '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-The health check must return `200`. The unauthenticated MCP call must return `401` with a Bearer challenge.
+The health check must return `200`; it validates the public policy, automation configuration, and D1 schema without exposing values. The unauthenticated MCP call must return `401` with a Bearer challenge.
 
 Connect your MCP client to `https://YOUR-ORIGIN/mcp`, sign in with the allowed GitHub account, inspect the client and requested permissions on the consent page, and approve only if recognized.
 
@@ -129,8 +156,9 @@ Test in this order:
 2. List or read a note.
 3. Inspect the graph.
 4. In write mode, update a disposable note using its current SHA.
+5. Push a disposable note change and inspect it with `obsidian_list_events`.
 
-## 8. Automatic deployment from GitHub
+## 9. Automatic deployment from GitHub
 
 ### Cloudflare Workers Builds (recommended)
 
@@ -139,9 +167,11 @@ In the existing Worker's **Settings → Build**, connect the Cloudflare GitHub A
 Use these commands:
 
 - Build: `bun install --frozen-lockfile && bun run check`
-- Deploy: `bun run config:production && bunx wrangler deploy --config .wrangler/production.jsonc`
+- Deploy: `bun run config:production && bunx wrangler d1 migrations apply obsidian-vault-events --remote --config .wrangler/production.jsonc && bunx wrangler deploy --config .wrangler/production.jsonc`
 
 Add the non-secret deployment values listed below as Cloudflare build variables. Workers Builds creates and manages its deployment credential; runtime GitHub credentials remain separate Worker secrets. A push to `main` now runs all checks before deployment.
+
+Required build variables are `WORKER_NAME`, `ALLOWED_GITHUB_USER_ID`, `VAULT_REPOSITORIES`, `VAULT_ACCESS`, `OMIT_AUTHORIZATION_RESPONSE_ISS`, `OAUTH_KV_NAMESPACE_ID`, `GITHUB_WEBHOOK_HOOK_ID`, `GITHUB_WEBHOOK_REPOSITORY_ID`, `GITHUB_WEBHOOK_DEFAULT_BRANCH`, `GITHUB_WEBHOOK_VAULT`, `EVENT_D1_DATABASE_ID`, `EVENT_QUEUE_NAME`, and `EVENT_DLQ_NAME`. Add `CUSTOM_DOMAIN` when applicable and `AUTOMATIONS_YAML` when enabling handlers.
 
 ### GitHub Actions alternative
 
@@ -156,8 +186,9 @@ Create a narrowly scoped Cloudflare API token with exactly these policies:
 
 - Entire target account: **Workers Scripts → Write**.
 - Specified domain containing the MCP hostname: **Workers Routes → Write**.
+- The dedicated event database: **D1 → Edit**.
 
-The deployment workflow does not need DNS, KV Storage, billing, or access to any other Cloudflare product. Creating the OAuth KV namespace remains a one-time administrator action outside CI.
+The deployment workflow does not need DNS, KV Storage, billing, or access to any other Cloudflare product. Creating KV, D1, and Queue resources remains a one-time administrator action outside CI; deploys only apply versioned migrations to the named D1 database.
 
 Add these GitHub Actions variables:
 
@@ -169,6 +200,14 @@ Add these GitHub Actions variables:
 - `OAUTH_KV_NAMESPACE_ID`
 - `CUSTOM_DOMAIN` — omit for Workers.dev.
 - `OMIT_AUTHORIZATION_RESPONSE_ISS=false`
+- `GITHUB_WEBHOOK_HOOK_ID`
+- `GITHUB_WEBHOOK_REPOSITORY_ID`
+- `GITHUB_WEBHOOK_DEFAULT_BRANCH`
+- `GITHUB_WEBHOOK_VAULT`
+- `EVENT_D1_DATABASE_ID`
+- `EVENT_QUEUE_NAME`
+- `EVENT_DLQ_NAME`
+- `AUTOMATIONS_YAML` — optional; defaults to no automations.
 
 The workflow generates a private Wrangler file during the job, repeats every check, and deploys only from `main` or a manual dispatch. Runtime GitHub credentials remain only in Cloudflare.
 
@@ -183,9 +222,12 @@ Add each repository to both places:
 
 Redeploy after changing the allowlist. Every authorized MCP client for this personal instance can access every configured vault; there is no per-client vault partition within one instance.
 
+The scheduled reconciler watches every allowlisted vault. The current webhook policy is intentionally singular, so `GITHUB_WEBHOOK_VAULT` receives immediate push delivery and additional vaults may take up to fifteen minutes to emit events. Use a separate deployment when another owner or a separate authorization boundary is required.
+
 ## Rotation and revocation
 
 - Rotate `GITHUB_VAULT_TOKEN` with `wrangler secret put GITHUB_VAULT_TOKEN`.
 - Rotate the OAuth client secret with `wrangler secret put GITHUB_CLIENT_SECRET`.
+- Rotate the webhook secret in GitHub and Cloudflare together with `wrangler secret put GITHUB_WEBHOOK_SECRET`.
 - Revoke an MCP client by removing its OAuth grant from KV or rotating the OAuth state namespace.
 - Disable writes immediately by changing `VAULT_ACCESS` to `read` and deploying; the write tool disappears.

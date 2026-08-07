@@ -49,7 +49,7 @@ describe("OAuth consent", () => {
     await storeConsentState(kv, consentId, {
       oauthRequest: { clientId: "codex-client" },
       grantedScopes: [readScope, writeScope],
-      githubUserId: "759695",
+      githubUserId: "12345678",
     }, 600);
 
     const first = await consumeConsentState<Record<string, unknown>>(kv, consentId);

@@ -6,6 +6,8 @@ import { configuredVaults, resolveVault, vaultAccess } from "./config";
 import { readScope, writeScope } from "./authPolicy";
 import { getMarkdownTree, listMarkdownFiles, readMarkdownFile, readMarkdownTree, searchMarkdownFiles, writeMarkdownFile } from "./github";
 import { buildVaultGraph, findShortestPath, noteByPath } from "./graph";
+import { parseAutomationConfig } from "./automations/config";
+import { listAutomationRuns, listVaultEvents } from "./eventStore";
 import type { VaultGraph } from "./graph";
 import type { AuthProps, Env, VaultConfig } from "./types";
 
@@ -14,7 +16,7 @@ const responseFormat = z.enum(["markdown", "json"]).default("markdown");
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "obsidian-vault-mcp-server",
-    version: "0.2.0",
+    version: "0.3.0",
   });
 
   server.registerTool(
@@ -65,6 +67,112 @@ export function createServer(): McpServer {
       return {
         structured,
         markdown: [`Found ${files.length} notes (showing ${notes.length}).`, "", ...notes.map((note) => `- \`${note.path}\``)].join("\n"),
+        responseFormat: response_format,
+      };
+    }),
+  );
+
+  server.registerTool(
+    "obsidian_list_events",
+    {
+      title: "List Obsidian vault events",
+      description: "List metadata-only note change events derived from canonical GitHub revisions. Returns paths and SHAs, never note contents.",
+      inputSchema: {
+        vault: z.string().min(1).max(200),
+        event_type: z.enum(["note.created", "note.updated", "note.deleted"]).optional(),
+        path_prefix: z.string().max(500).optional(),
+        limit: z.number().int().min(1).max(100).default(50),
+        offset: z.number().int().min(0).default(0),
+        response_format: responseFormat,
+      },
+      annotations: readOnlyAnnotations,
+    },
+    async ({ vault, event_type, path_prefix, limit, offset, response_format }) => toolResult(async () => {
+      const workerEnv = authorizedEnv();
+      const resolvedVault = resolveVault(workerEnv, vault);
+      const events = await listVaultEvents(workerEnv.EVENT_DB, resolvedVault.fullName, {
+        eventType: event_type,
+        pathPrefix: path_prefix ? normalizeGraphPrefix(path_prefix) : undefined,
+        limit,
+        offset,
+      });
+      const structured = {
+        vault: resolvedVault.fullName,
+        count: events.length,
+        offset,
+        events,
+        has_more: events.length === limit,
+        ...(events.length === limit ? { next_offset: offset + events.length } : {}),
+      };
+      return {
+        structured,
+        markdown: events.length === 0
+          ? "No vault events have been recorded yet."
+          : events.map((event) => `- ${event.eventType} \`${event.path}\` at \`${event.afterRevision}\``).join("\n"),
+        responseFormat: response_format,
+      };
+    }),
+  );
+
+  server.registerTool(
+    "obsidian_list_automations",
+    {
+      title: "List Obsidian automations",
+      description: "List configured vault automations, their filters, scopes, loop policy, and internal handler. Never exposes secrets.",
+      inputSchema: { response_format: responseFormat },
+      annotations: readOnlyAnnotations,
+    },
+    async ({ response_format }) => toolResult(() => {
+      const workerEnv = authorizedEnv();
+      const config = parseAutomationConfig(workerEnv.AUTOMATIONS_YAML ?? "version: 1\nautomations: []\n");
+      const automations = config.automations.map((automation) => ({
+        id: automation.id,
+        enabled: automation.enabled,
+        scopes: automation.scopes,
+        match: automation.match,
+        loop: automation.loop,
+        target: automation.target,
+      }));
+      return {
+        structured: { version: config.version, automations },
+        markdown: automations.length === 0
+          ? "No automations are configured."
+          : automations.map((automation) => `- **${automation.id}** — ${automation.enabled ? "enabled" : "disabled"}; \`${automation.target.handler}\``).join("\n"),
+        responseFormat: response_format,
+      };
+    }),
+  );
+
+  server.registerTool(
+    "obsidian_list_automation_runs",
+    {
+      title: "List Obsidian automation runs",
+      description: "List metadata-only automation execution history for one allowed vault.",
+      inputSchema: {
+        vault: z.string().min(1).max(200),
+        limit: z.number().int().min(1).max(100).default(50),
+        offset: z.number().int().min(0).default(0),
+        response_format: responseFormat,
+      },
+      annotations: readOnlyAnnotations,
+    },
+    async ({ vault, limit, offset, response_format }) => toolResult(async () => {
+      const workerEnv = authorizedEnv();
+      const resolvedVault = resolveVault(workerEnv, vault);
+      const runs = await listAutomationRuns(workerEnv.EVENT_DB, resolvedVault.fullName, limit, offset);
+      const structured = {
+        vault: resolvedVault.fullName,
+        count: runs.length,
+        offset,
+        runs,
+        has_more: runs.length === limit,
+        ...(runs.length === limit ? { next_offset: offset + runs.length } : {}),
+      };
+      return {
+        structured,
+        markdown: runs.length === 0
+          ? "No automation runs have been recorded."
+          : runs.map((run) => `- **${run.automationId}** — ${run.status} for \`${run.path}\` (${run.attempts} attempt${run.attempts === 1 ? "" : "s"})`).join("\n"),
         responseFormat: response_format,
       };
     }),

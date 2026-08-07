@@ -1,13 +1,13 @@
 {
   "name": "obsidian-vault-mcp-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.3.11",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "config:production": "node scripts/render-production-config.mjs",
+    "config:production": "bun scripts/render-production-config.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "bun run typecheck && bun test && bun run audit && bun run dry-run",
