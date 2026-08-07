@@ -40,6 +40,10 @@ export interface StoredAutomationRun {
   eventType: string;
   path: string;
   handler: string;
+  configHash: string;
+  sourceRevision: string;
+  sourceSha: string;
+  outputPath: string;
   status: string;
   attempts: number;
   errorCode?: string;
@@ -127,60 +131,6 @@ export async function storeVaultEvents(
   await db.batch(statements);
 }
 
-export async function startAutomationRun(
-  db: D1Database,
-  automationId: string,
-  event: VaultEvent,
-  repositoryId: string,
-  vault: string,
-  handler: string,
-): Promise<{ runId: string; status: "claimed" | "running" | "succeeded" }> {
-  const runId = `automation-run:v1:${encodeURIComponent(automationId)}:${encodeURIComponent(event.id)}`;
-  const now = new Date().toISOString();
-  const leaseCutoff = new Date(Date.now() - 5 * 60_000).toISOString();
-  const claimed = await db.prepare(`
-    INSERT INTO automation_runs (
-      run_id, automation_id, event_id, repository_id, vault,
-      event_type, path, handler, status, attempts, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', 1, ?, ?)
-    ON CONFLICT(automation_id, event_id) DO UPDATE SET
-      status = 'running', attempts = automation_runs.attempts + 1,
-      error_code = NULL, updated_at = excluded.updated_at
-    WHERE automation_runs.status = 'failed'
-      OR (automation_runs.status = 'running' AND automation_runs.updated_at < ?)
-    RETURNING run_id AS runId
-  `).bind(
-    runId,
-    automationId,
-    event.id,
-    repositoryId,
-    vault,
-    event.type,
-    event.path,
-    handler,
-    now,
-    now,
-    leaseCutoff,
-  ).first<{ runId: string }>();
-  if (claimed) return { runId, status: "claimed" };
-
-  const existing = await db.prepare(`
-    SELECT status FROM automation_runs WHERE automation_id = ? AND event_id = ?
-  `).bind(automationId, event.id).first<{ status: string }>();
-  return { runId, status: existing?.status === "succeeded" ? "succeeded" : "running" };
-}
-
-export async function finishAutomationRun(
-  db: D1Database,
-  runId: string,
-  status: "succeeded" | "failed" | "skipped",
-  errorCode?: string,
-): Promise<void> {
-  await db.prepare(`
-    UPDATE automation_runs SET status = ?, error_code = ?, updated_at = ? WHERE run_id = ?
-  `).bind(status, errorCode ?? null, new Date().toISOString(), runId).run();
-}
-
 export async function listVaultEvents(
   db: D1Database,
   vault: string,
@@ -218,11 +168,17 @@ export async function listAutomationRuns(
   offset: number,
 ): Promise<StoredAutomationRun[]> {
   const result = await db.prepare(`
-    SELECT run_id AS runId, automation_id AS automationId, event_id AS eventId,
-      vault, event_type AS eventType, path, handler, status, attempts,
-      error_code AS errorCode, updated_at AS updatedAt
-    FROM automation_runs WHERE vault = ?
-    ORDER BY updated_at DESC, run_id DESC LIMIT ? OFFSET ?
+    SELECT jobs.run_id AS runId, jobs.automation_id AS automationId,
+      jobs.event_id AS eventId, jobs.vault,
+      COALESCE(events.event_type, 'vault.event') AS eventType,
+      jobs.source_path AS path, jobs.handler, jobs.config_hash AS configHash,
+      jobs.source_revision AS sourceRevision, jobs.source_sha AS sourceSha,
+      jobs.output_path AS outputPath, jobs.status, jobs.attempts,
+      jobs.error_code AS errorCode, jobs.updated_at AS updatedAt
+    FROM automation_jobs AS jobs
+    LEFT JOIN vault_events AS events ON events.event_id = jobs.event_id
+    WHERE jobs.vault = ?
+    ORDER BY jobs.updated_at DESC, jobs.job_sequence DESC LIMIT ? OFFSET ?
   `).bind(vault, limit, offset).all<StoredAutomationRun>();
   return result.results;
 }

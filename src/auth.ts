@@ -210,8 +210,17 @@ app.get("/healthz", async (context) => {
   if (!/^\d+$/.test(context.env.GITHUB_WEBHOOK_HOOK_ID) || !/^\d+$/.test(context.env.GITHUB_WEBHOOK_REPOSITORY_ID)) {
     throw new Error("Webhook policy IDs must be numeric");
   }
-  parseAutomationConfig(context.env.AUTOMATIONS_YAML ?? "version: 1\nautomations: []\n");
+  const automationConfig = parseAutomationConfig(context.env.AUTOMATIONS_YAML ?? "version: 1\nautomations: []\n");
+  if (automationConfig.automations.some((automation) => automation.enabled && automation.target.handler === "summarize-note")) {
+    if (!context.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is required by summarize-note");
+    if (vaultAccess(context.env) !== "write") throw new Error("summarize-note requires VAULT_ACCESS=write");
+  }
+  if (!context.env.AUTOMATIONS_QUEUE || typeof context.env.AUTOMATIONS_QUEUE.send !== "function") {
+    throw new Error("AUTOMATIONS_QUEUE binding is required");
+  }
   await context.env.EVENT_DB.prepare("SELECT 1 FROM vault_states LIMIT 1").first();
+  await context.env.EVENT_DB.prepare("SELECT 1 FROM automation_jobs LIMIT 1").first();
+  await context.env.EVENT_DB.prepare("SELECT 1 FROM automation_targets LIMIT 1").first();
   return context.json({ ok: true, service: "obsidian-vault-mcp" });
 });
 

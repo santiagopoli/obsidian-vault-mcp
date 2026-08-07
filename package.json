@@ -8,6 +8,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "config:production": "bun scripts/render-production-config.mjs",
+    "automations:check": "bun scripts/check-automations.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "bun run typecheck && bun test && bun run audit && bun run dry-run",

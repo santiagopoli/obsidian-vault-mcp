@@ -35,14 +35,26 @@
     }
   ],
   "queues": {
-    "producers": [{ "binding": "EVENTS_QUEUE", "queue": "obsidian-vault-events" }],
-    "consumers": [{
-      "queue": "obsidian-vault-events",
-      "max_batch_size": 10,
-      "max_retries": 5,
-      "max_concurrency": 1,
-      "dead_letter_queue": "obsidian-vault-events-dlq"
-    }]
+    "producers": [
+      { "binding": "EVENTS_QUEUE", "queue": "obsidian-vault-events" },
+      { "binding": "AUTOMATIONS_QUEUE", "queue": "obsidian-vault-automations" }
+    ],
+    "consumers": [
+      {
+        "queue": "obsidian-vault-events",
+        "max_batch_size": 10,
+        "max_retries": 5,
+        "max_concurrency": 1,
+        "dead_letter_queue": "obsidian-vault-events-dlq"
+      },
+      {
+        "queue": "obsidian-vault-automations",
+        "max_batch_size": 1,
+        "max_retries": 5,
+        "max_concurrency": 2,
+        "dead_letter_queue": "obsidian-vault-automations-dlq"
+      }
+    ]
   },
   "triggers": { "crons": ["*/15 * * * *"] },
   "observability": {

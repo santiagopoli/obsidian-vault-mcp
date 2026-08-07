@@ -42,6 +42,8 @@ jobs:
           EVENT_D1_DATABASE_ID: ${{ vars.EVENT_D1_DATABASE_ID }}
           EVENT_QUEUE_NAME: ${{ vars.EVENT_QUEUE_NAME }}
           EVENT_DLQ_NAME: ${{ vars.EVENT_DLQ_NAME }}
+          AUTOMATION_QUEUE_NAME: ${{ vars.AUTOMATION_QUEUE_NAME }}
+          AUTOMATION_DLQ_NAME: ${{ vars.AUTOMATION_DLQ_NAME }}
           AUTOMATIONS_YAML: ${{ vars.AUTOMATIONS_YAML }}
       - name: Apply D1 migrations
         run: bunx wrangler d1 migrations apply obsidian-vault-events --remote --config .wrangler/production.jsonc

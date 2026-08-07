@@ -207,6 +207,32 @@ export interface MarkdownFile {
   htmlUrl: string;
 }
 
+export interface MarkdownBlob {
+  path: string;
+  content: string;
+  sha: string;
+}
+
+export async function readMarkdownBlobAtSha(
+  token: string,
+  vault: VaultConfig,
+  path: string,
+  sha: string,
+): Promise<MarkdownBlob> {
+  const normalized = normalizeNotePath(path);
+  if (!/^[0-9a-f]{40}$/i.test(sha)) throw new Error("Markdown blob SHA must be a 40-character Git object ID");
+
+  const blobs = await readBlobBatch(token, vault, [{ path: normalized, sha, type: "blob" }]);
+  const blob = blobs.blob0;
+  if (!blob || blob.oid !== sha || blob.isBinary || blob.text === null) {
+    throw new Error(`GitHub returned an unsupported blob for '${normalized}'`);
+  }
+  if (blob.byteSize > maxNoteBytes) {
+    throw new Error(`Note '${normalized}' exceeds the ${maxNoteBytes}-byte read limit`);
+  }
+  return { path: normalized, content: blob.text, sha: blob.oid };
+}
+
 interface GitHubContentFile {
   content: string;
   encoding: "base64";

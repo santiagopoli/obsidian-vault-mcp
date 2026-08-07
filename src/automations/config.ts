@@ -8,6 +8,7 @@ import {
 
 const identifierPattern = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const summariesDirectory = "_Automations/Summaries";
 
 const uniqueArray = <T extends z.ZodTypeAny>(item: T, label: string) => z.array(item)
   .max(50)
@@ -63,10 +64,43 @@ const loopPolicySchema = z.discriminatedUnion("allow_automation_origin", [
   }).strict(),
 ]).default({ allow_automation_origin: false, max_depth: 0 });
 
-const targetSchema = z.discriminatedUnion("kind", [
+const visibleSummariesDirectorySchema = z.string().min(1).max(500).superRefine((directory, context) => {
+  const segments = directory.split("/");
+  if (
+    directory.startsWith("/") ||
+    directory.endsWith("/") ||
+    directory.includes("\\") ||
+    directory.includes("\0") ||
+    segments.some((segment) => segment === "" || segment === "." || segment === ".." || segment.startsWith("."))
+  ) {
+    context.addIssue({ code: "custom", message: "Output directory must be a visible relative POSIX path" });
+  }
+  if (directory !== summariesDirectory && !directory.startsWith(`${summariesDirectory}/`)) {
+    context.addIssue({ code: "custom", message: `Output directory must be under ${summariesDirectory}` });
+  }
+});
+
+const targetSchema = z.discriminatedUnion("handler", [
   z.object({
     kind: z.literal("internal"),
     handler: z.literal("log-event"),
+  }).strict(),
+  z.object({
+    kind: z.literal("internal"),
+    handler: z.literal("summarize-note"),
+    model: z.object({
+      provider: z.literal("openai"),
+      name: z.string().trim().min(1).max(200),
+    }).strict(),
+    input: z.object({
+      include_frontmatter: z.boolean().default(false),
+      max_characters: z.number().int().min(1_000).max(100_000),
+    }).strict(),
+    output: z.object({
+      directory: visibleSummariesDirectorySchema,
+      mode: z.literal("managed"),
+      max_characters: z.number().int().min(256).max(16_000),
+    }).strict(),
   }).strict(),
 ]);
 
@@ -77,7 +111,42 @@ const automationSchema = z.object({
   match: matchSchema,
   loop: loopPolicySchema,
   target: targetSchema,
-}).strict();
+}).strict().superRefine((automation, context) => {
+  if (automation.loop.allow_automation_origin) {
+    context.addIssue({
+      code: "custom",
+      path: ["loop", "allow_automation_origin"],
+      message: "Automation-origin events are not supported yet",
+    });
+  }
+  if (automation.target.handler !== "summarize-note") return;
+
+  if (!automation.scopes.includes("vault:read") || !automation.scopes.includes("vault:write")) {
+    context.addIssue({
+      code: "custom",
+      path: ["scopes"],
+      message: "summarize-note requires vault:read and vault:write scopes",
+    });
+  }
+  const unsupportedEvents = automation.match.events.filter(
+    (event) => event !== "note.created" && event !== "note.updated",
+  );
+  if (unsupportedEvents.length > 0) {
+    context.addIssue({
+      code: "custom",
+      path: ["match", "events"],
+      message: "summarize-note supports only note.created and note.updated events",
+    });
+  }
+  const requiredExclusion = "_Automations/**";
+  if (!automation.match.paths.exclude.includes(requiredExclusion)) {
+    context.addIssue({
+      code: "custom",
+      path: ["match", "paths", "exclude"],
+      message: `summarize-note must exclude all managed automation output with '${requiredExclusion}'`,
+    });
+  }
+});
 
 export const automationConfigSchema = z.object({
   version: z.literal(1).default(1),

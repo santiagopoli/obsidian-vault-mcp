@@ -4,8 +4,9 @@ import { AuthHandler } from "./auth";
 import { supportedScopes } from "./authPolicy";
 import { createServer } from "./server";
 import { handleGitHubWebhook } from "./webhookHandler";
-import { processVaultEventMessage, reconcileVaults } from "./eventQueue";
-import type { Env, VaultEventQueueMessage } from "./types";
+import { dispatchPendingAutomationJobs, processVaultEventMessage, reconcileVaults } from "./eventQueue";
+import { processAutomationJobMessage } from "./automationWorker";
+import type { Env, WorkerQueueMessage } from "./types";
 
 const apiHandler = createMcpHandler(createServer);
 
@@ -49,15 +50,19 @@ export default {
     headers.set("Cache-Control", "no-store");
     return new Response(JSON.stringify(metadata), { status: response.status, headers });
   },
-  async queue(batch: MessageBatch<VaultEventQueueMessage>, env: Env): Promise<void> {
+  async queue(batch: MessageBatch<WorkerQueueMessage>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {
-        await processVaultEventMessage(env, message.body);
+        if (message.body.kind === "automation") {
+          await processAutomationJobMessage(env, message.body);
+        } else {
+          await processVaultEventMessage(env, message.body);
+        }
         message.ack();
       } catch (error) {
         console.error(JSON.stringify({
-          type: "vault_event.failed",
-          delivery_id: message.body.deliveryId,
+          type: message.body.kind === "automation" ? "automation.failed" : "vault_event.failed",
+          message_id: message.body.kind === "automation" ? message.body.runId : message.body.deliveryId,
           error: error instanceof Error ? error.message.slice(0, 200) : "unexpected_error",
         }));
         message.retry();
@@ -65,6 +70,6 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env, context: ExecutionContext): Promise<void> {
-    context.waitUntil(reconcileVaults(env));
+    context.waitUntil(Promise.all([reconcileVaults(env), dispatchPendingAutomationJobs(env)]).then(() => undefined));
   },
 };

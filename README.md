@@ -42,7 +42,7 @@ Follow the complete [self-hosting guide](docs/self-hosting.md). The short versio
 2. Create Cloudflare KV, D1, and Queues resources plus an OAuth App on GitHub.
 3. Create a fine-grained GitHub token restricted to selected vault repositories.
 4. Copy `wrangler.example.jsonc` to the ignored `wrangler.jsonc` and enter only non-secret deployment values.
-5. Upload the four runtime secrets to Cloudflare, apply the D1 migration, and deploy.
+5. Upload the four base runtime secrets to Cloudflare, apply the D1 migrations, and deploy. Add `OPENAI_API_KEY` only when enabling an AI automation.
 6. Connect an MCP client to `https://your-host/mcp` and approve its consent screen.
 7. After the manual deployment passes its smoke tests, connect Cloudflare Workers Builds to the fork or enable the protected GitHub Actions alternative.
 
@@ -63,7 +63,7 @@ bun run check
 - Hidden paths and non-Markdown files are never exposed as notes.
 - Writes create Git commits; rename and delete operations are intentionally unavailable.
 - GitHub is canonical: pushes made by Obsidian, the MCP, GitHub's UI, or another Git client produce the same events.
-- Automation handlers are internal and explicitly configured; arbitrary outbound callback URLs are not supported yet.
+- Automation handlers are internal and explicitly configured; `summarize-note` writes only managed summaries and arbitrary outbound callback URLs are not supported yet.
 - One repository receives immediate webhook delivery per deployment; every allowlisted vault is still reconciled on the fifteen-minute schedule.
 
 See [Vault events and automations](docs/automations.md) for delivery, filtering, retries, and the write-loop policy.

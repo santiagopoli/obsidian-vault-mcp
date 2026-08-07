@@ -1,8 +1,9 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { parseAutomationConfig } from "../src/automations/config.ts";
 
 const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const workerNamePattern = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+const queueNamePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const hostnamePattern = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 
 const workerName = optional("WORKER_NAME") ?? "obsidian-vault-mcp";
@@ -16,10 +17,17 @@ const webhookHookId = required("GITHUB_WEBHOOK_HOOK_ID");
 const webhookRepositoryId = required("GITHUB_WEBHOOK_REPOSITORY_ID");
 const webhookDefaultBranch = required("GITHUB_WEBHOOK_DEFAULT_BRANCH");
 const webhookVault = required("GITHUB_WEBHOOK_VAULT");
-const automationsYaml = optional("AUTOMATIONS_YAML") ?? "version: 1\nautomations: []\n";
+const automationsYamlValue = optional("AUTOMATIONS_YAML");
+const automationsFile = optional("AUTOMATIONS_FILE");
+if (automationsYamlValue && automationsFile) fail("Set either AUTOMATIONS_YAML or AUTOMATIONS_FILE, not both");
+const automationsYaml = automationsFile
+  ? await readFile(automationsFile, "utf8")
+  : automationsYamlValue ?? "version: 1\nautomations: []\n";
 const eventD1DatabaseId = required("EVENT_D1_DATABASE_ID");
 const eventQueueName = optional("EVENT_QUEUE_NAME") ?? "obsidian-vault-events";
 const eventDlqName = optional("EVENT_DLQ_NAME") ?? "obsidian-vault-events-dlq";
+const automationQueueName = optional("AUTOMATION_QUEUE_NAME") ?? "obsidian-vault-automations";
+const automationDlqName = optional("AUTOMATION_DLQ_NAME") ?? "obsidian-vault-automations-dlq";
 
 if (!workerNamePattern.test(workerName)) fail("WORKER_NAME must be a valid Cloudflare Worker name");
 if (!/^\d+$/.test(allowedUserId)) fail("ALLOWED_GITHUB_USER_ID must be an immutable numeric GitHub user ID");
@@ -37,11 +45,20 @@ if (!repositories.includes(webhookVault)) fail("GITHUB_WEBHOOK_VAULT must be in 
 if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(eventD1DatabaseId)) {
   fail("EVENT_D1_DATABASE_ID must be a D1 UUID");
 }
-if (!workerNamePattern.test(eventQueueName) || !workerNamePattern.test(eventDlqName)) fail("Event queue names are invalid");
+if (
+  !queueNamePattern.test(eventQueueName) ||
+  !queueNamePattern.test(eventDlqName) ||
+  !queueNamePattern.test(automationQueueName) ||
+  !queueNamePattern.test(automationDlqName)
+) fail("Queue names are invalid");
+let automationConfig;
 try {
-  parseAutomationConfig(automationsYaml);
+  automationConfig = parseAutomationConfig(automationsYaml);
 } catch (error) {
   fail(error instanceof Error ? error.message : "AUTOMATIONS_YAML is invalid");
+}
+if (automationConfig.automations.some((automation) => automation.enabled && automation.target.handler === "summarize-note") && vaultAccess !== "write") {
+  fail("summarize-note requires VAULT_ACCESS=write");
 }
 
 const config = {
@@ -65,7 +82,15 @@ const config = {
     AUTOMATIONS_YAML: automationsYaml,
   },
   secrets: {
-    required: ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "GITHUB_VAULT_TOKEN", "GITHUB_WEBHOOK_SECRET"],
+    required: [
+      "GITHUB_CLIENT_ID",
+      "GITHUB_CLIENT_SECRET",
+      "GITHUB_VAULT_TOKEN",
+      "GITHUB_WEBHOOK_SECRET",
+      ...(automationConfig.automations.some((automation) => automation.target.handler === "summarize-note")
+        ? ["OPENAI_API_KEY"]
+        : []),
+    ],
   },
   kv_namespaces: [{ binding: "OAUTH_KV", id: oauthKvNamespaceId }],
   d1_databases: [{
@@ -75,14 +100,26 @@ const config = {
     migrations_dir: "../migrations",
   }],
   queues: {
-    producers: [{ binding: "EVENTS_QUEUE", queue: eventQueueName }],
-    consumers: [{
-      queue: eventQueueName,
-      max_batch_size: 10,
-      max_retries: 5,
-      max_concurrency: 1,
-      dead_letter_queue: eventDlqName,
-    }],
+    producers: [
+      { binding: "EVENTS_QUEUE", queue: eventQueueName },
+      { binding: "AUTOMATIONS_QUEUE", queue: automationQueueName },
+    ],
+    consumers: [
+      {
+        queue: eventQueueName,
+        max_batch_size: 10,
+        max_retries: 5,
+        max_concurrency: 1,
+        dead_letter_queue: eventDlqName,
+      },
+      {
+        queue: automationQueueName,
+        max_batch_size: 1,
+        max_retries: 5,
+        max_concurrency: 2,
+        dead_letter_queue: automationDlqName,
+      },
+    ],
   },
   triggers: { crons: ["*/15 * * * *"] },
   observability: { enabled: true, head_sampling_rate: 0.1 },

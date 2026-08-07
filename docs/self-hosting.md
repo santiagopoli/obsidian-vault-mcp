@@ -39,6 +39,8 @@ bunx wrangler kv namespace create OAUTH_KV
 bunx wrangler d1 create obsidian-vault-events
 bunx wrangler queues create obsidian-vault-events
 bunx wrangler queues create obsidian-vault-events-dlq
+bunx wrangler queues create obsidian-vault-automations
+bunx wrangler queues create obsidian-vault-automations-dlq
 ```
 
 Copy the returned 32-character KV namespace ID and D1 database UUID. KV stores OAuth state, grants, and hashed or encrypted token material. D1 stores delivery metadata, vault revisions, derived note events, and automation run status. Neither stores vault note contents.
@@ -91,7 +93,7 @@ Edit these non-secret values:
 - `GITHUB_WEBHOOK_DEFAULT_BRANCH`: normally `main`.
 - `GITHUB_WEBHOOK_VAULT`: the matching `owner/repository` allowlist entry.
 
-Leave `GITHUB_WEBHOOK_HOOK_ID` as a temporary positive number until the webhook is created in step 7. Keep the default Queue names unless they conflict with existing resources in your account.
+Leave `GITHUB_WEBHOOK_HOOK_ID` as a temporary positive number until the webhook is created in step 7. Keep the four default Queue names unless they conflict with existing resources in your account.
 
 For a custom domain, set `workers_dev` to `false` and add:
 
@@ -169,9 +171,9 @@ Use these commands:
 - Build: `bun install --frozen-lockfile && bun run check`
 - Deploy: `bun run config:production && bunx wrangler d1 migrations apply obsidian-vault-events --remote --config .wrangler/production.jsonc && bunx wrangler deploy --config .wrangler/production.jsonc`
 
-Add the non-secret deployment values listed below as Cloudflare build variables. Workers Builds creates and manages its deployment credential; runtime GitHub credentials remain separate Worker secrets. A push to `main` now runs all checks before deployment.
+Add the non-secret deployment values listed below as Cloudflare build variables. Workers Builds creates and manages its deployment credential; runtime GitHub credentials remain separate Worker secrets. A push to `main` now runs all checks before deployment. When `summarize-note` is enabled, verify after deployment that `OPENAI_API_KEY` exists as a Worker secret; Wrangler's `secrets.required` metadata does not upload or verify remote secret values.
 
-Required build variables are `WORKER_NAME`, `ALLOWED_GITHUB_USER_ID`, `VAULT_REPOSITORIES`, `VAULT_ACCESS`, `OMIT_AUTHORIZATION_RESPONSE_ISS`, `OAUTH_KV_NAMESPACE_ID`, `GITHUB_WEBHOOK_HOOK_ID`, `GITHUB_WEBHOOK_REPOSITORY_ID`, `GITHUB_WEBHOOK_DEFAULT_BRANCH`, `GITHUB_WEBHOOK_VAULT`, `EVENT_D1_DATABASE_ID`, `EVENT_QUEUE_NAME`, and `EVENT_DLQ_NAME`. Add `CUSTOM_DOMAIN` when applicable and `AUTOMATIONS_YAML` when enabling handlers.
+Required build variables are `ALLOWED_GITHUB_USER_ID`, `VAULT_REPOSITORIES`, `OAUTH_KV_NAMESPACE_ID`, `GITHUB_WEBHOOK_HOOK_ID`, `GITHUB_WEBHOOK_REPOSITORY_ID`, `GITHUB_WEBHOOK_DEFAULT_BRANCH`, `GITHUB_WEBHOOK_VAULT`, and `EVENT_D1_DATABASE_ID`. `WORKER_NAME`, `VAULT_ACCESS`, `OMIT_AUTHORIZATION_RESPONSE_ISS`, and all four Queue names have safe defaults. Add `CUSTOM_DOMAIN` when applicable and `AUTOMATIONS_YAML` when enabling handlers.
 
 ### GitHub Actions alternative
 
@@ -182,13 +184,14 @@ Create a protected GitHub Environment named `production`. Add these repository o
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 
-Create a narrowly scoped Cloudflare API token with exactly these policies:
+Create a narrowly scoped Cloudflare API token with these policies:
 
 - Entire target account: **Workers Scripts → Write**.
-- Specified domain containing the MCP hostname: **Workers Routes → Write**.
+- Entire target account: **Queues → Read** and **Queues → Write**.
 - The dedicated event database: **D1 → Edit**.
+- When using a custom domain, the specified domain containing the MCP hostname: **Workers Routes → Write**.
 
-The deployment workflow does not need DNS, KV Storage, billing, or access to any other Cloudflare product. Creating KV, D1, and Queue resources remains a one-time administrator action outside CI; deploys only apply versioned migrations to the named D1 database.
+The deployment workflow does not need DNS, KV Storage, billing, or access to unrelated Cloudflare products. Creating KV, D1, and Queue resources remains a one-time administrator action outside CI; deploys apply versioned migrations and attach the existing Queue consumers.
 
 Add these GitHub Actions variables:
 
@@ -207,6 +210,8 @@ Add these GitHub Actions variables:
 - `EVENT_D1_DATABASE_ID`
 - `EVENT_QUEUE_NAME`
 - `EVENT_DLQ_NAME`
+- `AUTOMATION_QUEUE_NAME`
+- `AUTOMATION_DLQ_NAME`
 - `AUTOMATIONS_YAML` — optional; defaults to no automations.
 
 The workflow generates a private Wrangler file during the job, repeats every check, and deploys only from `main` or a manual dispatch. Runtime GitHub credentials remain only in Cloudflare.

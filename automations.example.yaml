@@ -1,0 +1,27 @@
+version: 1
+automations:
+  - id: summarize-story-notes
+    enabled: true
+    scopes: [vault:read, vault:write]
+    match:
+      vaults: [YOUR_GITHUB_OWNER/YOUR_VAULT_REPOSITORY]
+      events: [note.created, note.updated]
+      paths:
+        include: ["Story/**/*.md"]
+        exclude: ["_Automations/**"]
+    loop:
+      allow_automation_origin: false
+      max_depth: 0
+    target:
+      kind: internal
+      handler: summarize-note
+      model:
+        provider: openai
+        name: gpt-5.6-sol
+      input:
+        include_frontmatter: false
+        max_characters: 50000
+      output:
+        directory: _Automations/Summaries
+        mode: managed
+        max_characters: 6000

@@ -27,10 +27,30 @@ export type AutomationLoopPolicy =
       max_depth: number;
     };
 
-export interface InternalAutomationTarget {
+export interface LogEventAutomationTarget {
   kind: "internal";
-  handler: string;
+  handler: "log-event";
 }
+
+export interface SummarizeNoteAutomationTarget {
+  kind: "internal";
+  handler: "summarize-note";
+  model: {
+    provider: "openai";
+    name: string;
+  };
+  input: {
+    include_frontmatter: boolean;
+    max_characters: number;
+  };
+  output: {
+    directory: string;
+    mode: "managed";
+    max_characters: number;
+  };
+}
+
+export type InternalAutomationTarget = LogEventAutomationTarget | SummarizeNoteAutomationTarget;
 
 export type AutomationTarget = InternalAutomationTarget;
 
