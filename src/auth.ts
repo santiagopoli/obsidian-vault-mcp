@@ -29,7 +29,7 @@ const app = new Hono<{ Bindings: Env }>();
 app.use("*", async (context, next) => {
   await next();
   context.header("Cache-Control", "no-store");
-  context.header("Content-Security-Policy", "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+  context.header("Content-Security-Policy", "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; script-src 'self'");
   context.header("Referrer-Policy", "no-referrer");
   context.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   context.header("X-Content-Type-Options", "nosniff");
@@ -168,6 +168,32 @@ app.post("/consent", async (context) => {
   });
 });
 
+app.get("/consent.js", (context) => context.body(`const form = document.querySelector("form[data-consent]");
+if (form) {
+  let submitted = false;
+  form.addEventListener("submit", (event) => {
+    if (submitted) {
+      event.preventDefault();
+      return;
+    }
+    submitted = true;
+    form.setAttribute("aria-busy", "true");
+    const submitter = event.submitter;
+    const decision = submitter instanceof HTMLButtonElement ? submitter.value : "deny";
+    const decisionInput = document.createElement("input");
+    decisionInput.type = "hidden";
+    decisionInput.name = "decision";
+    decisionInput.value = decision;
+    form.append(decisionInput);
+    for (const button of form.querySelectorAll("button")) button.disabled = true;
+    if (submitter instanceof HTMLButtonElement) {
+      submitter.textContent = decision === "approve" ? "Authorizing…" : "Denying…";
+    }
+    const status = document.querySelector("[data-consent-status]");
+    if (status) status.textContent = "Authorization submitted. Returning to Codex…";
+  });
+}`, 200, { "Content-Type": "text/javascript; charset=utf-8" }));
+
 app.get("/healthz", (context) => {
   allowedGitHubUserId(context.env);
   configuredVaults(context.env);
@@ -188,14 +214,15 @@ function consentPage(consentId: string, pending: PendingConsent, repositories: s
   const permissions = pending.grantedScopes.map((scope) => `<li>${scope === writeScope ? "Create and update Markdown notes" : "Read notes, links, tags, and graph metadata"}</li>`).join("");
   const vaults = repositories.map((repository) => `<li><code>${escapeHtml(repository)}</code></li>`).join("");
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Authorize Obsidian Vault MCP</title></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Authorize Obsidian Vault MCP</title><script src="/consent.js" defer></script></head>
 <body><main><h1>Authorize ${escapeHtml(pending.clientName)}</h1>
 <p>Signed in as <strong>${escapeHtml(pending.githubLogin)}</strong>. This client is requesting access to:</p>
 <ul>${vaults}</ul><h2>Permissions</h2><ul>${permissions}</ul>
 <p>Only approve clients you recognize. Access can be revoked by reconnecting or clearing OAuth grants.</p>
-<form method="post" action="/consent"><input type="hidden" name="consent_id" value="${escapeHtml(consentId)}">
+<form method="post" action="/consent" data-consent><input type="hidden" name="consent_id" value="${escapeHtml(consentId)}">
 <button type="submit" name="decision" value="approve">Allow access</button>
-<button type="submit" name="decision" value="deny">Deny</button></form></main></body></html>`;
+<button type="submit" name="decision" value="deny">Deny</button>
+<p data-consent-status role="status" aria-live="polite"></p></form></main></body></html>`;
 }
 
 function displayClientName(client: ClientInfo): string {
