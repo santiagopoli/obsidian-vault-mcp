@@ -5,13 +5,13 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { allowedGitHubUserId, configuredVaults, vaultAccess } from "./config";
+import { consumeConsentState, storeConsentState } from "./consentState";
 import { selectGrantedScopes, writeScope } from "./authPolicy";
 import type { AuthProps, Env } from "./types";
 
 const authStatePrefix = "github-oauth-state:";
-const consentStatePrefix = "oauth-consent-state:";
 const stateTtlSeconds = 600;
-const stateCookie = "__Host-obsidian_mcp_state";
+const githubCallbackStateCookie = "__Host-obsidian_mcp_state";
 
 interface PendingIdentity {
   oauthRequest: AuthRequest;
@@ -78,7 +78,7 @@ app.get("/authorize", async (context) => {
 app.get("/callback", async (context) => {
   const state = context.req.query("state");
   const code = context.req.query("code");
-  const cookieState = readCookie(context.req.header("Cookie"), stateCookie);
+  const cookieState = readCookie(context.req.header("Cookie"), githubCallbackStateCookie);
   if (!state || !code || !cookieState || !timingSafeEqual(state, cookieState)) {
     return context.text("Invalid OAuth callback state", 400);
   }
@@ -124,14 +124,12 @@ app.get("/callback", async (context) => {
     githubLogin: user.login,
     clientName: displayClientName(client),
   };
-  await context.env.OAUTH_KV.put(`${consentStatePrefix}${consentId}`, JSON.stringify(pending), {
-    expirationTtl: stateTtlSeconds,
-  });
+  await storeConsentState(context.env.OAUTH_KV, consentId, pending, stateTtlSeconds);
 
   return new Response(consentPage(consentId, pending, configuredVaults(context.env).map(({ fullName }) => fullName)), {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
-      "Set-Cookie": stateCookieValue(consentId, stateTtlSeconds, "Strict"),
+      "Set-Cookie": stateCookieValue("", 0, "Lax"),
     },
   });
 });
@@ -140,19 +138,15 @@ app.post("/consent", async (context) => {
   const form = await context.req.raw.formData();
   const consentId = form.get("consent_id");
   const decision = form.get("decision");
-  const cookieState = readCookie(context.req.header("Cookie"), stateCookie);
-  if (typeof consentId !== "string" || !cookieState || !timingSafeEqual(consentId, cookieState)) {
-    return context.text("Invalid consent state", 400);
+  const consent = await consumeConsentState<PendingConsent>(context.env.OAUTH_KV, consentId);
+  if (consent.status === "invalid") return context.text("Invalid consent state", 400);
+  if (consent.status === "expired") {
+    return context.text("Consent request expired or was already used. Return to Codex and connect again.", 410);
   }
-
-  const pending = await takeState<PendingConsent>(context.env.OAUTH_KV, `${consentStatePrefix}${consentId}`);
-  if (!pending) return context.text("Consent request expired", 400);
-  const clearCookie = stateCookieValue("", 0, "Strict");
+  const pending = consent.value;
 
   if (decision !== "approve") {
-    const denied = oauthRedirectError(pending.oauthRequest, "access_denied", "The vault owner denied access");
-    denied.headers.set("Set-Cookie", clearCookie);
-    return denied;
+    return oauthRedirectError(pending.oauthRequest, "access_denied", "The vault owner denied access");
   }
 
   const props: AuthProps = {
@@ -170,7 +164,7 @@ app.post("/consent", async (context) => {
 
   return new Response(null, {
     status: 302,
-    headers: { Location: redirectTo, "Set-Cookie": clearCookie },
+    headers: { Location: redirectTo },
   });
 });
 
@@ -240,7 +234,7 @@ async function takeState<T>(kv: KVNamespace, key: string): Promise<T | undefined
 }
 
 function stateCookieValue(value: string, maxAge: number, sameSite: "Lax" | "Strict"): string {
-  return `${stateCookie}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=${sameSite}`;
+  return `${githubCallbackStateCookie}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=${sameSite}`;
 }
 
 function readCookie(header: string | undefined, name: string): string | undefined {
