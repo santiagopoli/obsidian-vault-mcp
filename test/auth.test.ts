@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readScope, selectGrantedScopes, writeScope } from "../src/authPolicy";
 import { consumeConsentState, storeConsentState } from "../src/consentState";
 import { allowedGitHubUserId, vaultAccess } from "../src/config";
+import { isLoopbackRedirect, loopbackHandoffPage } from "../src/loopbackRedirect";
 import type { Env } from "../src/types";
 
 describe("OAuth scopes", () => {
@@ -89,5 +90,26 @@ describe("OAuth consent", () => {
 
     expect(await consumeConsentState(kv, "not-a-token")).toEqual({ status: "invalid" });
     expect(reads).toBe(0);
+  });
+});
+
+describe("OAuth loopback handoff", () => {
+  it("recognizes local callbacks without trusting lookalike hosts", () => {
+    expect(isLoopbackRedirect("http://127.0.0.1:56904/callback?code=secret")).toBe(true);
+    expect(isLoopbackRedirect("http://127.23.45.67/callback")).toBe(true);
+    expect(isLoopbackRedirect("http://localhost:56904/callback")).toBe(true);
+    expect(isLoopbackRedirect("http://[::1]:56904/callback")).toBe(true);
+    expect(isLoopbackRedirect("https://localhost.attacker.example/callback")).toBe(false);
+    expect(isLoopbackRedirect("https://127.0.0.1.attacker.example/callback")).toBe(false);
+    expect(isLoopbackRedirect("ftp://localhost/callback")).toBe(false);
+  });
+
+  it("renders a safe explicit handoff link", () => {
+    const page = loopbackHandoffPage("http://127.0.0.1:56904/callback?code=one&state=two");
+
+    expect(page).toContain("Access granted");
+    expect(page).toContain("Finish in Codex");
+    expect(page).toContain("code=one&amp;state=two");
+    expect(page).toContain('target="_blank" rel="noopener noreferrer"');
   });
 });

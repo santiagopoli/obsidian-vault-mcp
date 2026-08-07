@@ -6,6 +6,7 @@ import {
 import { Hono } from "hono";
 import { allowedGitHubUserId, configuredVaults, vaultAccess } from "./config";
 import { consumeConsentState, storeConsentState } from "./consentState";
+import { isLoopbackRedirect, loopbackHandoffPage } from "./loopbackRedirect";
 import { selectGrantedScopes, writeScope } from "./authPolicy";
 import type { AuthProps, Env } from "./types";
 
@@ -161,6 +162,12 @@ app.post("/consent", async (context) => {
     scope: pending.grantedScopes,
     props,
   });
+
+  if (isLoopbackRedirect(redirectTo)) {
+    return new Response(loopbackHandoffPage(redirectTo), {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+  }
 
   return new Response(null, {
     status: 302,
