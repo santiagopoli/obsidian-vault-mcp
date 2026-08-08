@@ -4,6 +4,13 @@ const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 export type VaultAccess = "read" | "write";
 
+export function webChatEnabled(env: Env): boolean {
+  if (env.WEB_CHAT_ENABLED === undefined) return Boolean(env.OPENAI_API_KEY);
+  if (env.WEB_CHAT_ENABLED === "true") return true;
+  if (env.WEB_CHAT_ENABLED === "false") return false;
+  throw new Error("WEB_CHAT_ENABLED must be true or false when configured");
+}
+
 export function vaultAccess(env: Env): VaultAccess {
   if (env.VAULT_ACCESS !== "read" && env.VAULT_ACCESS !== "write") {
     throw new Error("VAULT_ACCESS must be either 'read' or 'write'");

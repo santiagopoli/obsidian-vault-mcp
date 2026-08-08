@@ -7,6 +7,7 @@ import { handleGitHubWebhook } from "./webhookHandler";
 import { dispatchPendingAutomationJobs, processVaultEventMessage, reconcileVaults } from "./eventQueue";
 import { processAutomationJobMessage } from "./automationWorker";
 import type { Env, WorkerQueueMessage } from "./types";
+import { cleanupWebPortalState } from "./webSession";
 
 const apiHandler = createMcpHandler(createServer);
 
@@ -70,6 +71,10 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env, context: ExecutionContext): Promise<void> {
-    context.waitUntil(Promise.all([reconcileVaults(env), dispatchPendingAutomationJobs(env)]).then(() => undefined));
+    context.waitUntil(Promise.all([
+      reconcileVaults(env),
+      dispatchPendingAutomationJobs(env),
+      cleanupWebPortalState(env.EVENT_DB),
+    ]).then(() => undefined));
   },
 };

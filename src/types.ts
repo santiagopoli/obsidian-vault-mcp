@@ -30,12 +30,16 @@ export interface Env {
   GITHUB_WEBHOOK_DEFAULT_BRANCH: string;
   GITHUB_WEBHOOK_VAULT: string;
   OPENAI_API_KEY?: string;
+  OPENAI_CHAT_MODEL?: string;
+  WEB_CHAT_ENABLED?: "true" | "false";
+  WEB_CHAT_DAILY_LIMIT?: string;
   AUTOMATIONS_YAML?: string;
   OAUTH_KV: KVNamespace;
   EVENT_DB: D1Database;
   EVENTS_QUEUE: Queue<VaultEventQueueMessage>;
   AUTOMATIONS_QUEUE: Queue<AutomationJobQueueMessage>;
   OAUTH_PROVIDER: OAuthHelpers;
+  ASSETS: Fetcher;
 }
 
 export interface AuthProps {

@@ -355,14 +355,19 @@ export interface SearchMatch {
   htmlUrl: string;
 }
 
-export async function searchMarkdownFiles(
+export interface SearchPathMatch {
+  path: string;
+  htmlUrl: string;
+}
+
+export async function searchMarkdownPaths(
   token: string,
   vault: VaultConfig,
   query: string,
   pathPrefix: string | undefined,
   limit: number,
   offset: number,
-): Promise<{ total: number; incomplete: boolean; matches: SearchMatch[] }> {
+): Promise<{ total: number; incomplete: boolean; matches: SearchPathMatch[] }> {
   const normalizedQuery = query.trim();
   if (normalizedQuery.length < 2 || normalizedQuery.length > 200) {
     throw new Error("Search query must contain between 2 and 200 characters");
@@ -384,19 +389,36 @@ export async function searchMarkdownFiles(
     incomplete_results: boolean;
     items: Array<{ path: string; html_url: string }>;
   }>(token, `/search/code?q=${encodeURIComponent(qualifiers)}&per_page=${limit}&page=${page}`);
+  return {
+    total: result.total_count,
+    incomplete: result.incomplete_results,
+    matches: result.items.map((item) => ({ path: item.path, htmlUrl: item.html_url })),
+  };
+}
+
+export async function searchMarkdownFiles(
+  token: string,
+  vault: VaultConfig,
+  query: string,
+  pathPrefix: string | undefined,
+  limit: number,
+  offset: number,
+): Promise<{ total: number; incomplete: boolean; matches: SearchMatch[] }> {
+  const normalizedQuery = query.trim();
+  const result = await searchMarkdownPaths(token, vault, query, pathPrefix, limit, offset);
 
   const matches = await Promise.all(
-    result.items.map(async (item) => {
+    result.matches.map(async (item) => {
       const file = await readMarkdownFile(token, vault, item.path);
       return {
         path: item.path,
-        htmlUrl: item.html_url,
+        htmlUrl: item.htmlUrl,
         excerpt: excerptAround(file.content, normalizedQuery),
       };
     }),
   );
 
-  return { total: result.total_count, incomplete: result.incomplete_results, matches };
+  return { total: result.total, incomplete: result.incomplete, matches };
 }
 
 function excerptAround(content: string, query: string): string {
