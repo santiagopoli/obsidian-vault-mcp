@@ -43,7 +43,7 @@ bunx wrangler queues create obsidian-vault-automations
 bunx wrangler queues create obsidian-vault-automations-dlq
 ```
 
-Copy the returned 32-character KV namespace ID and D1 database UUID. KV stores OAuth state, grants, and hashed or encrypted token material. D1 stores delivery metadata, vault revisions, derived note events, and automation run status. Neither stores vault note contents.
+Copy the returned 32-character KV namespace ID and D1 database UUID. KV stores OAuth provider state, grants, and hashed or encrypted token material. D1 stores one-time consent/session state, delivery metadata, vault revisions, derived note events, automation run status, and metadata-only chat quotas. Neither stores vault note contents or chat messages.
 
 ## 3. Register a GitHub OAuth App
 
@@ -120,10 +120,13 @@ Apply the D1 schema, then deploy the code and encrypted secrets:
 
 ```sh
 bunx wrangler d1 migrations apply obsidian-vault-events --remote --config wrangler.jsonc
+bun run web:build
 bunx wrangler deploy --config wrangler.jsonc --secrets-file .env.production
 ```
 
 Delete `.env.production` after the deployment. Future code deployments preserve existing Cloudflare secrets.
+
+To enable the portal chat, upload `OPENAI_API_KEY`; chat enables automatically when the secret exists. Optionally set `WEB_CHAT_ENABLED=false` to disable it, or `true` to make a missing secret fail the health check. `OPENAI_CHAT_MODEL` and `WEB_CHAT_DAILY_LIMIT` remain optional.
 
 ## 7. Create and verify the GitHub webhook
 

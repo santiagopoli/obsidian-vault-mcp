@@ -16,7 +16,7 @@ const responseFormat = z.enum(["markdown", "json"]).default("markdown");
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "obsidian-vault-mcp-server",
-    version: "0.3.0",
+    version: "0.4.0",
   });
 
   server.registerTool(

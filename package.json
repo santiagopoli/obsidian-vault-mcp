@@ -1,17 +1,21 @@
 {
   "name": "obsidian-vault-mcp-server",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.3.11",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev": "bun run web:build && bun run db:migrate:local && wrangler dev",
+    "deploy": "bun run web:build && wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply obsidian-vault-events --local --config wrangler.example.jsonc",
     "config:production": "bun scripts/render-production-config.mjs",
     "automations:check": "bun scripts/check-automations.mjs",
+    "web:dev": "vite --config web/vite.config.ts",
+    "web:typecheck": "tsc -p web/tsconfig.json --noEmit",
+    "web:build": "vite build --config web/vite.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "bun run typecheck && bun test && bun run audit && bun run dry-run",
+    "check": "bun run typecheck && bun run web:typecheck && bun test && bun run web:build && bun run audit && bun run dry-run",
     "audit": "bun audit --production",
     "dry-run": "wrangler deploy --dry-run --config wrangler.example.jsonc --outdir .wrangler/dry-run",
     "types": "wrangler types worker-configuration.d.ts --include-runtime false"
@@ -21,6 +25,9 @@
     "@modelcontextprotocol/server": "2.0.0",
     "agents": "0.20.1",
     "hono": "4.13.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
     "yaml": "2.9.0",
     "zod": "4.4.3"
   },
@@ -31,7 +38,11 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260729.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
     "typescript": "6.0.3",
+    "vite": "^8.2.1",
     "vitest": "4.0.18",
     "wrangler": "4.119.0"
   }

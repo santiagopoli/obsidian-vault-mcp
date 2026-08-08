@@ -4,11 +4,20 @@ import {
   type ClientInfo,
 } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
-import { allowedGitHubUserId, configuredVaults, resolveVault, vaultAccess } from "./config";
+import { allowedGitHubUserId, configuredVaults, resolveVault, vaultAccess, webChatEnabled } from "./config";
 import { parseAutomationConfig } from "./automations/config";
 import { consumeConsentState, storeConsentState } from "./consentState";
 import { isLoopbackRedirect, loopbackHandoffPage } from "./loopbackRedirect";
 import { selectGrantedScopes, writeScope } from "./authPolicy";
+import { WebApiHandler } from "./webApi";
+import {
+  clearWebStateCookie,
+  consumeWebAuthState,
+  createWebAuthState,
+  createWebSession,
+  readWebStateCookie,
+  secureEquals,
+} from "./webSession";
 import type { AuthProps, Env } from "./types";
 
 const authStatePrefix = "github-oauth-state:";
@@ -30,12 +39,29 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.use("*", async (context, next) => {
   await next();
-  context.header("Cache-Control", "no-store");
-  context.header("Content-Security-Policy", "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; script-src 'self'");
+  context.header("Cache-Control", new URL(context.req.url).pathname.startsWith("/assets/")
+    ? "public, max-age=31536000, immutable"
+    : "no-store");
+  context.header("Content-Security-Policy", "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'");
   context.header("Referrer-Policy", "no-referrer");
   context.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   context.header("X-Content-Type-Options", "nosniff");
   context.header("X-Frame-Options", "DENY");
+});
+
+app.route("/api", WebApiHandler);
+
+app.get("/web/login", async (context) => {
+  const pending = await createWebAuthState(context.env.EVENT_DB);
+  const authorizeUrl = new URL("https://github.com/login/oauth/authorize");
+  authorizeUrl.searchParams.set("client_id", context.env.GITHUB_CLIENT_ID);
+  authorizeUrl.searchParams.set("redirect_uri", new URL("/callback", context.req.url).href);
+  authorizeUrl.searchParams.set("scope", "read:user");
+  authorizeUrl.searchParams.set("state", pending.state);
+  return new Response(null, {
+    status: 302,
+    headers: { Location: authorizeUrl.href, "Set-Cookie": pending.cookie },
+  });
 });
 
 app.get("/authorize", async (context) => {
@@ -80,6 +106,24 @@ app.get("/authorize", async (context) => {
 app.get("/callback", async (context) => {
   const state = context.req.query("state");
   const code = context.req.query("code");
+  const webCookieState = readWebStateCookie(context.req.header("Cookie"));
+  if (state && code && webCookieState && secureEquals(state, webCookieState)) {
+    const valid = await consumeWebAuthState(context.env.EVENT_DB, state);
+    if (!valid) return context.text("Web login expired or was already used", 400);
+    let user: { id: number; login: string };
+    try {
+      user = await exchangeGitHubCode(context.env, code, context.req.url);
+    } catch {
+      return context.text("GitHub authentication failed", 502);
+    }
+    if (String(user.id) !== allowedGitHubUserId(context.env)) {
+      return context.text("This GitHub account is not allowed to access the vault portal", 403);
+    }
+    const created = await createWebSession(context.env.EVENT_DB, String(user.id), user.login);
+    const headers = new Headers({ Location: "/", "Set-Cookie": created.cookie });
+    headers.append("Set-Cookie", clearWebStateCookie());
+    return new Response(null, { status: 302, headers });
+  }
   const cookieState = readCookie(context.req.header("Cookie"), githubCallbackStateCookie);
   if (!state || !code || !cookieState || !timingSafeEqual(state, cookieState)) {
     return context.text("Invalid OAuth callback state", 400);
@@ -88,30 +132,12 @@ app.get("/callback", async (context) => {
   const storedRequest = await takeState<PendingIdentity>(context.env.OAUTH_KV, `${authStatePrefix}${state}`);
   if (!storedRequest) return context.text("OAuth request expired", 400);
 
-  const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
-    method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: context.env.GITHUB_CLIENT_ID,
-      client_secret: context.env.GITHUB_CLIENT_SECRET,
-      code,
-      redirect_uri: new URL("/callback", context.req.url).href,
-    }),
-  });
-  if (!tokenResponse.ok) return context.text("GitHub authentication failed", 502);
-  const tokenBody = await tokenResponse.json<{ access_token?: string }>();
-  if (!tokenBody.access_token) return context.text("GitHub did not issue an access token", 502);
-
-  const userResponse = await fetch("https://api.github.com/user", {
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${tokenBody.access_token}`,
-      "User-Agent": "obsidian-vault-mcp-server",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-  });
-  if (!userResponse.ok) return context.text("Could not verify GitHub identity", 502);
-  const user = await userResponse.json<{ id: number; login: string }>();
+  let user: { id: number; login: string };
+  try {
+    user = await exchangeGitHubCode(context.env, code, context.req.url);
+  } catch {
+    return context.text("GitHub authentication failed", 502);
+  }
   if (String(user.id) !== allowedGitHubUserId(context.env)) {
     return context.text("This GitHub account is not allowed to access the vault", 403);
   }
@@ -126,7 +152,7 @@ app.get("/callback", async (context) => {
     githubLogin: user.login,
     clientName: displayClientName(client),
   };
-  await storeConsentState(context.env.OAUTH_KV, consentId, pending, stateTtlSeconds);
+  await storeConsentState(context.env.EVENT_DB, consentId, pending, stateTtlSeconds);
 
   return new Response(consentPage(consentId, pending, configuredVaults(context.env).map(({ fullName }) => fullName)), {
     headers: {
@@ -140,7 +166,7 @@ app.post("/consent", async (context) => {
   const form = await context.req.raw.formData();
   const consentId = form.get("consent_id");
   const decision = form.get("decision");
-  const consent = await consumeConsentState<PendingConsent>(context.env.OAUTH_KV, consentId);
+  const consent = await consumeConsentState<PendingConsent>(context.env.EVENT_DB, consentId);
   if (consent.status === "invalid") return context.text("Invalid consent state", 400);
   if (consent.status === "expired") {
     return context.text("Consent request expired or was already used. Return to Codex and connect again.", 410);
@@ -215,23 +241,26 @@ app.get("/healthz", async (context) => {
     if (!context.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is required by summarize-note");
     if (vaultAccess(context.env) !== "write") throw new Error("summarize-note requires VAULT_ACCESS=write");
   }
+  if (webChatEnabled(context.env) && !context.env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY is required when WEB_CHAT_ENABLED=true");
+  }
   if (!context.env.AUTOMATIONS_QUEUE || typeof context.env.AUTOMATIONS_QUEUE.send !== "function") {
     throw new Error("AUTOMATIONS_QUEUE binding is required");
   }
   await context.env.EVENT_DB.prepare("SELECT 1 FROM vault_states LIMIT 1").first();
   await context.env.EVENT_DB.prepare("SELECT 1 FROM automation_jobs LIMIT 1").first();
   await context.env.EVENT_DB.prepare("SELECT 1 FROM automation_targets LIMIT 1").first();
+  await context.env.EVENT_DB.prepare("SELECT 1 FROM web_sessions LIMIT 1").first();
+  await context.env.EVENT_DB.prepare("SELECT 1 FROM web_chat_usage LIMIT 1").first();
+  await context.env.EVENT_DB.prepare("SELECT 1 FROM web_vault_registry LIMIT 1").first();
+  await context.env.EVENT_DB.prepare("SELECT 1 FROM mcp_consent_states LIMIT 1").first();
+  if (!context.env.ASSETS || typeof context.env.ASSETS.fetch !== "function") throw new Error("ASSETS binding is required");
   return context.json({ ok: true, service: "obsidian-vault-mcp" });
 });
 
-app.get("/", (context) =>
-  context.json({
-    name: "Obsidian Vault MCP",
-    endpoint: "/mcp",
-    authentication: "OAuth 2.1 via GitHub with per-client consent",
-    access: vaultAccess(context.env),
-  }),
-);
+app.get("/", (context) => context.env.ASSETS.fetch(context.req.raw));
+app.get("/assets/*", (context) => context.env.ASSETS.fetch(context.req.raw));
+app.get("*", (context) => context.env.ASSETS.fetch(context.req.raw));
 
 function consentPage(consentId: string, pending: PendingConsent, repositories: string[]): string {
   const permissions = pending.grantedScopes.map((scope) => `<li>${scope === writeScope ? "Create and update Markdown notes" : "Read notes, links, tags, and graph metadata"}</li>`).join("");
@@ -250,6 +279,32 @@ function consentPage(consentId: string, pending: PendingConsent, repositories: s
 
 function displayClientName(client: ClientInfo): string {
   return client.clientName?.trim() || "an unnamed MCP client";
+}
+
+async function exchangeGitHubCode(env: Env, code: string, requestUrl: string): Promise<{ id: number; login: string }> {
+  const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: env.GITHUB_CLIENT_ID,
+      client_secret: env.GITHUB_CLIENT_SECRET,
+      code,
+      redirect_uri: new URL("/callback", requestUrl).href,
+    }),
+  });
+  if (!tokenResponse.ok) throw new Error("GitHub token exchange failed");
+  const tokenBody = await tokenResponse.json<{ access_token?: string }>();
+  if (!tokenBody.access_token) throw new Error("GitHub did not issue an access token");
+  const userResponse = await fetch("https://api.github.com/user", {
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${tokenBody.access_token}`,
+      "User-Agent": "obsidian-vault-mcp-server",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+  if (!userResponse.ok) throw new Error("GitHub identity lookup failed");
+  return userResponse.json<{ id: number; login: string }>();
 }
 
 function authorizationErrorResponse(error: unknown): Response {

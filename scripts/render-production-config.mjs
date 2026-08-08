@@ -17,6 +17,9 @@ const webhookHookId = required("GITHUB_WEBHOOK_HOOK_ID");
 const webhookRepositoryId = required("GITHUB_WEBHOOK_REPOSITORY_ID");
 const webhookDefaultBranch = required("GITHUB_WEBHOOK_DEFAULT_BRANCH");
 const webhookVault = required("GITHUB_WEBHOOK_VAULT");
+const openAiChatModel = optional("OPENAI_CHAT_MODEL") ?? "gpt-5.6-sol";
+const webChatEnabled = optional("WEB_CHAT_ENABLED");
+const webChatDailyLimit = optional("WEB_CHAT_DAILY_LIMIT") ?? "50";
 const automationsYamlValue = optional("AUTOMATIONS_YAML");
 const automationsFile = optional("AUTOMATIONS_FILE");
 if (automationsYamlValue && automationsFile) fail("Set either AUTOMATIONS_YAML or AUTOMATIONS_FILE, not both");
@@ -42,6 +45,11 @@ if (!/^\d+$/.test(webhookHookId)) fail("GITHUB_WEBHOOK_HOOK_ID must be numeric")
 if (!/^\d+$/.test(webhookRepositoryId)) fail("GITHUB_WEBHOOK_REPOSITORY_ID must be numeric");
 if (!/^[A-Za-z0-9._/-]{1,255}$/.test(webhookDefaultBranch)) fail("GITHUB_WEBHOOK_DEFAULT_BRANCH is invalid");
 if (!repositories.includes(webhookVault)) fail("GITHUB_WEBHOOK_VAULT must be in VAULT_REPOSITORIES");
+if (!/^[A-Za-z0-9._-]{1,100}$/.test(openAiChatModel)) fail("OPENAI_CHAT_MODEL is invalid");
+if (webChatEnabled && webChatEnabled !== "true" && webChatEnabled !== "false") fail("WEB_CHAT_ENABLED must be true or false");
+if (!/^\d+$/.test(webChatDailyLimit) || Number(webChatDailyLimit) < 1 || Number(webChatDailyLimit) > 1000) {
+  fail("WEB_CHAT_DAILY_LIMIT must be an integer between 1 and 1000");
+}
 if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(eventD1DatabaseId)) {
   fail("EVENT_D1_DATABASE_ID must be a D1 UUID");
 }
@@ -79,7 +87,15 @@ const config = {
     GITHUB_WEBHOOK_REPOSITORY_ID: webhookRepositoryId,
     GITHUB_WEBHOOK_DEFAULT_BRANCH: webhookDefaultBranch,
     GITHUB_WEBHOOK_VAULT: webhookVault,
+    OPENAI_CHAT_MODEL: openAiChatModel,
+    ...(webChatEnabled ? { WEB_CHAT_ENABLED: webChatEnabled } : {}),
+    WEB_CHAT_DAILY_LIMIT: webChatDailyLimit,
     AUTOMATIONS_YAML: automationsYaml,
+  },
+  assets: {
+    directory: "../web/dist",
+    binding: "ASSETS",
+    run_worker_first: true,
   },
   secrets: {
     required: [
@@ -87,7 +103,7 @@ const config = {
       "GITHUB_CLIENT_SECRET",
       "GITHUB_VAULT_TOKEN",
       "GITHUB_WEBHOOK_SECRET",
-      ...(automationConfig.automations.some((automation) => automation.target.handler === "summarize-note")
+      ...(webChatEnabled === "true" || automationConfig.automations.some((automation) => automation.target.handler === "summarize-note")
         ? ["OPENAI_API_KEY"]
         : []),
     ],

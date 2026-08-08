@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { Miniflare } from "miniflare";
+import webPortalMigration from "../migrations/0003_web_portal.sql?raw";
 import { readScope, selectGrantedScopes, writeScope } from "../src/authPolicy";
 import { consumeConsentState, storeConsentState } from "../src/consentState";
 import { allowedGitHubUserId, vaultAccess } from "../src/config";
@@ -39,59 +41,70 @@ describe("owner authorization configuration", () => {
 describe("OAuth consent", () => {
   it("prevents replay after consuming a valid token without browser state", async () => {
     const consentId = "7b805566-b0f1-4ff3-93f7-5bf80f3e78e2";
-    const key = `oauth-consent-state:${consentId}`;
-    const stored = new Map<string, string>();
-    const kv = {
-      get: async (stateKey: string) => stored.get(stateKey) ?? null,
-      delete: async (stateKey: string) => { stored.delete(stateKey); },
-      put: async (stateKey: string, value: string) => { stored.set(stateKey, value); },
-    } as unknown as KVNamespace;
-    await storeConsentState(kv, consentId, {
+    const { db, runtime } = await consentDatabase();
+    await storeConsentState(db, consentId, {
       oauthRequest: { clientId: "codex-client" },
       grantedScopes: [readScope, writeScope],
       githubUserId: "12345678",
     }, 600);
 
-    const first = await consumeConsentState<Record<string, unknown>>(kv, consentId);
+    const first = await consumeConsentState<Record<string, unknown>>(db, consentId);
 
     expect(first.status).toBe("valid");
-    expect(stored.has(key)).toBe(false);
-
-    const replay = await consumeConsentState<Record<string, unknown>>(kv, consentId);
+    const replay = await consumeConsentState<Record<string, unknown>>(db, consentId);
 
     expect(replay.status).toBe("expired");
+    await runtime.dispose();
   });
 
   it("keeps overlapping consent flows independent", async () => {
     const firstId = "2b5d922f-1433-4ec7-9947-38db96d5b04d";
     const secondId = "4ac5e8be-f3e2-47e5-8ac9-ac3ea4f31730";
-    const stored = new Map<string, string>();
-    const kv = {
-      get: async (stateKey: string) => stored.get(stateKey) ?? null,
-      delete: async (stateKey: string) => { stored.delete(stateKey); },
-      put: async (stateKey: string, value: string) => { stored.set(stateKey, value); },
-    } as unknown as KVNamespace;
-    await storeConsentState(kv, firstId, { client: "Codex A" }, 600);
-    await storeConsentState(kv, secondId, { client: "Codex B" }, 600);
+    const { db, runtime } = await consentDatabase();
+    await storeConsentState(db, firstId, { client: "Codex A" }, 600);
+    await storeConsentState(db, secondId, { client: "Codex B" }, 600);
 
-    const second = await consumeConsentState<{ client: string }>(kv, secondId);
-    const first = await consumeConsentState<{ client: string }>(kv, firstId);
+    const second = await consumeConsentState<{ client: string }>(db, secondId);
+    const first = await consumeConsentState<{ client: string }>(db, firstId);
 
     expect(second).toEqual({ status: "valid", value: { client: "Codex B" } });
     expect(first).toEqual({ status: "valid", value: { client: "Codex A" } });
+    await runtime.dispose();
   });
 
   it("rejects malformed consent tokens without reading storage", async () => {
-    let reads = 0;
-    const kv = {
-      get: async () => { reads += 1; return null; },
-      delete: async () => undefined,
-    } as unknown as KVNamespace;
+    const { db, runtime } = await consentDatabase();
 
-    expect(await consumeConsentState(kv, "not-a-token")).toEqual({ status: "invalid" });
-    expect(reads).toBe(0);
+    expect(await consumeConsentState(db, "not-a-token")).toEqual({ status: "invalid" });
+    await runtime.dispose();
+  });
+
+  it("atomically permits only one concurrent consent submission", async () => {
+    const { db, runtime } = await consentDatabase();
+    const consentId = "9e88634e-f4a1-45c0-9467-d4fb474ec364";
+    await storeConsentState(db, consentId, { client: "Codex" }, 600);
+    const contenders = await Promise.all([
+      consumeConsentState(db, consentId),
+      consumeConsentState(db, consentId),
+    ]);
+    expect(contenders.filter((result) => result.status === "valid")).toHaveLength(1);
+    await runtime.dispose();
   });
 });
+
+async function consentDatabase(): Promise<{ runtime: Miniflare; db: D1Database }> {
+  const runtime = new Miniflare({
+    modules: true,
+    script: "export default { fetch() { return new Response('ok') } }",
+    compatibilityDate: "2026-07-15",
+    d1Databases: ["EVENT_DB"],
+  });
+  const db = await runtime.getD1Database("EVENT_DB");
+  for (const statement of webPortalMigration.split(";").map((sql) => sql.trim()).filter(Boolean)) {
+    await db.prepare(statement).run();
+  }
+  return { runtime, db };
+}
 
 describe("OAuth loopback handoff", () => {
   it("recognizes local callbacks without trusting lookalike hosts", () => {

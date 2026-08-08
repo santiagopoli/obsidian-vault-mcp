@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { configuredVaults, resolveVault } from "../src/config";
+import { configuredVaults, resolveVault, webChatEnabled } from "../src/config";
 import { decodeBase64Utf8, encodeBase64Utf8, normalizeNotePath } from "../src/github";
 import type { Env } from "../src/types";
 
@@ -30,6 +30,15 @@ describe("vault configuration", () => {
   it("rejects duplicate repositories", () => {
     const duplicate = { GITHUB_REPOSITORIES: "example/notes,example/notes" } as Env;
     expect(() => configuredVaults(duplicate)).toThrow("duplicates");
+  });
+});
+
+describe("web chat configuration", () => {
+  it("follows the secret by default and permits an explicit off switch", () => {
+    expect(webChatEnabled({ OPENAI_API_KEY: "secret" } as Env)).toBe(true);
+    expect(webChatEnabled({} as Env)).toBe(false);
+    expect(webChatEnabled({ OPENAI_API_KEY: "secret", WEB_CHAT_ENABLED: "false" } as Env)).toBe(false);
+    expect(webChatEnabled({ WEB_CHAT_ENABLED: "true" } as Env)).toBe(true);
   });
 });
 
