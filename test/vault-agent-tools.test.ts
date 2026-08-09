@@ -49,6 +49,21 @@ describe("vault agent tools", () => {
     expect(toolbox.evidence().get("Canon/Luz.md")).toEqual({ path: "Canon/Luz.md", sha: "a".repeat(40) });
   });
 
+  it("accepts only exact mentioned paths inside the already-enforced scope", async () => {
+    globalThis.fetch = snapshotFetch() as unknown as typeof fetch;
+    const vaultToolbox = await VaultAgentToolbox.create(env, vault, "vault");
+    expect(vaultToolbox.requireMentionedPaths(["Canon/Luz.md", "Private/Other.md"])).toEqual([
+      { path: "Canon/Luz.md", sha: "a".repeat(40) },
+      { path: "Private/Other.md", sha: "b".repeat(40) },
+    ]);
+    expect(() => vaultToolbox.requireMentionedPaths(["canon/luz.md"])).toThrow("not present");
+    expect(() => vaultToolbox.requireMentionedPaths(["Missing.md"])).toThrow("not present");
+
+    const noteToolbox = await VaultAgentToolbox.create(env, vault, "note", "Canon/Luz.md");
+    expect(() => noteToolbox.requireMentionedPaths(["Canon/Luz.md"])).not.toThrow();
+    expect(() => noteToolbox.requireMentionedPaths(["Private/Other.md"])).toThrow("outside");
+  });
+
   it("searches only within an enforced folder and returns trace metadata", async () => {
     globalThis.fetch = snapshotFetch() as unknown as typeof fetch;
     const toolbox = await VaultAgentToolbox.create(env, vault, "folder", undefined, "Canon");

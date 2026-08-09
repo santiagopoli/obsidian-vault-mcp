@@ -264,6 +264,7 @@ export async function chat(
   request: {
     question: string;
     activePath?: string;
+    mentionedPaths: string[];
     scope: "note" | "vault";
     history: Array<{ role: "user" | "assistant"; content: string }>;
     model: ChatModelId;
@@ -274,7 +275,15 @@ export async function chat(
   const response = await fetch(`/api/vaults/${encodeURIComponent(vaultId)}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf, Accept: "application/x-ndjson" },
-    body: JSON.stringify(request),
+    body: JSON.stringify({
+      question: request.question,
+      activePath: request.activePath,
+      mentioned_paths: request.mentionedPaths,
+      scope: request.scope,
+      history: request.history,
+      model: request.model,
+      reasoning_effort: request.reasoning_effort,
+    }),
     signal: options.signal,
   });
   if (!response.ok) return json<ChatReply>(response);

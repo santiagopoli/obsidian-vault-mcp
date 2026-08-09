@@ -32,6 +32,7 @@ const app = new Hono<{ Bindings: Env }>();
 const chatSchema = z.object({
   question: z.string().trim().min(1).max(4_000),
   activePath: z.string().max(500).optional(),
+  mentioned_paths: z.array(z.string().min(1).max(500)).max(10).refine((paths) => new Set(paths).size === paths.length).default([]),
   pathPrefix: z.string().max(500).optional(),
   scope: z.enum(["note", "folder", "vault"]).default("vault"),
   history: z.array(z.object({
@@ -459,12 +460,19 @@ async function executeVaultAgent(
     const vault = await resolveAuthorizedVault(env, vaultId, signal);
     signal.throwIfAborted();
     const toolbox = await VaultAgentToolbox.create(env, vault, request.scope, request.activePath, request.pathPrefix, signal);
+    let mentionedNotes;
+    try {
+      mentionedNotes = toolbox.requireMentionedPaths(request.mentioned_paths);
+    } catch {
+      throw new VaultAgentProviderError("invalid_note_mention", 400);
+    }
     signal.throwIfAborted();
     return await runVaultAgent({
       apiKey: env.OPENAI_API_KEY ?? "",
       model: request.model,
       reasoningEffort: request.reasoning_effort,
       question: request.question,
+      mentionedNotes,
       history: request.history,
       scope: request.scope,
       activePath: request.activePath,
