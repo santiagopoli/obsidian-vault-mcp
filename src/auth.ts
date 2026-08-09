@@ -5,6 +5,7 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { allowedGitHubUserId, configuredVaults, resolveVault, vaultAccess, webChatEnabled } from "./config";
+import { defaultChatModel } from "./chatModels";
 import { parseAutomationConfig } from "./automations/config";
 import { consumeConsentState, storeConsentState } from "./consentState";
 import { isLoopbackRedirect, loopbackHandoffPage } from "./loopbackRedirect";
@@ -233,6 +234,7 @@ app.get("/healthz", async (context) => {
   configuredVaults(context.env);
   vaultAccess(context.env);
   resolveVault(context.env, context.env.GITHUB_WEBHOOK_VAULT);
+  defaultChatModel(context.env);
   if (!/^\d+$/.test(context.env.GITHUB_WEBHOOK_HOOK_ID) || !/^\d+$/.test(context.env.GITHUB_WEBHOOK_REPOSITORY_ID)) {
     throw new Error("Webhook policy IDs must be numeric");
   }
@@ -252,6 +254,7 @@ app.get("/healthz", async (context) => {
   await context.env.EVENT_DB.prepare("SELECT 1 FROM automation_targets LIMIT 1").first();
   await context.env.EVENT_DB.prepare("SELECT 1 FROM web_sessions LIMIT 1").first();
   await context.env.EVENT_DB.prepare("SELECT 1 FROM web_chat_usage LIMIT 1").first();
+  await context.env.EVENT_DB.prepare("SELECT 1 FROM web_chat_leases LIMIT 1").first();
   await context.env.EVENT_DB.prepare("SELECT 1 FROM web_vault_registry LIMIT 1").first();
   await context.env.EVENT_DB.prepare("SELECT 1 FROM mcp_consent_states LIMIT 1").first();
   if (!context.env.ASSETS || typeof context.env.ASSETS.fetch !== "function") throw new Error("ASSETS binding is required");

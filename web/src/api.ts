@@ -5,7 +5,18 @@ export interface Session {
   expires_at: number;
   deployment: "single-owner";
   chat_enabled: boolean;
+  chat: {
+    enabled: boolean;
+    provider: "openai";
+    models: Array<{ id: ChatModelId; label: string; description: string }>;
+    reasoning_efforts: ReasoningEffort[];
+    default_model: ChatModelId;
+    default_reasoning_effort: ReasoningEffort;
+  };
 }
+
+export type ChatModelId = "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna";
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface Vault {
   id: string;
@@ -38,11 +49,46 @@ export interface ChatReply {
   answer: string;
   citations: Array<{ id: string; path: string; sha: string }>;
   context: { note_count: number };
+  trace: AgentTraceEvent[];
+  usage: AgentUsage;
+  agent: { model: ChatModelId; reasoning_effort: ReasoningEffort; tool_calls: number; model_requests: number };
 }
+
+export interface AgentUsage {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+}
+
+export interface AgentTraceEvent {
+  id: string;
+  step: number;
+  tool: "list_notes" | "search_notes" | "read_notes" | "get_note_links" | "get_graph_overview";
+  status: "completed" | "failed";
+  input: { query?: string; prefix?: string; paths?: string[]; path?: string };
+  summary: string;
+  notes: Array<{ path: string; sha: string }>;
+}
+
+export type ChatProgress =
+  | { type: "status"; phase: "preparing" }
+  | { type: "model_request"; round: number }
+  | { type: "usage"; usage: AgentUsage }
+  | { type: "tool"; trace: AgentTraceEvent };
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string) {
     super(code);
+  }
+}
+
+export class AgentChatError extends ApiError {
+  constructor(status: number, code: string, readonly usage: AgentUsage, readonly trace: AgentTraceEvent[]) {
+    super(status, code);
   }
 }
 
@@ -96,13 +142,50 @@ export async function chat(
     activePath?: string;
     scope: "note" | "vault";
     history: Array<{ role: "user" | "assistant"; content: string }>;
+    model: ChatModelId;
+    reasoning_effort: ReasoningEffort;
   },
+  options: { signal?: AbortSignal; onProgress?: (event: ChatProgress) => void } = {},
 ): Promise<ChatReply> {
-  return json<ChatReply>(await fetch(`/api/vaults/${encodeURIComponent(vaultId)}/chat`, {
+  const response = await fetch(`/api/vaults/${encodeURIComponent(vaultId)}/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf, Accept: "application/x-ndjson" },
     body: JSON.stringify(request),
-  }));
+    signal: options.signal,
+  });
+  if (!response.ok) return json<ChatReply>(response);
+  if (!response.body) throw new ApiError(502, "agent_stream_invalid");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let reply: ChatReply | undefined;
+  let usage = emptyAgentUsage();
+  const trace: AgentTraceEvent[] = [];
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      buffer += decoder.decode(chunk.value, { stream: !chunk.done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line) continue;
+        const event = JSON.parse(line) as ChatProgress | { type: "result"; reply: ChatReply } | { type: "error"; error: string; status: number };
+        if (event.type === "result") reply = event.reply;
+        else if (event.type === "error") throw new AgentChatError(event.status, event.error, usage, trace);
+        else {
+          if (event.type === "usage") usage = event.usage;
+          if (event.type === "tool") trace.push(event.trace);
+          options.onProgress?.(event);
+        }
+      }
+      if (chunk.done) break;
+    }
+  } catch (error) {
+    if (options.signal?.aborted || error instanceof AgentChatError) throw error;
+    throw new AgentChatError(502, "agent_stream_interrupted", usage, trace);
+  }
+  if (!reply) throw new AgentChatError(502, "agent_stream_invalid", usage, trace);
+  return reply;
 }
 
 export async function logout(csrf: string): Promise<void> {
@@ -113,4 +196,8 @@ async function json<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => undefined) as { error?: string } | undefined;
   if (!response.ok) throw new ApiError(response.status, body?.error ?? "request_failed");
   return body as T;
+}
+
+function emptyAgentUsage(): AgentUsage {
+  return { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
 }

@@ -126,7 +126,7 @@ bunx wrangler deploy --config wrangler.jsonc --secrets-file .env.production
 
 Delete `.env.production` after the deployment. Future code deployments preserve existing Cloudflare secrets.
 
-To enable the portal chat, upload `OPENAI_API_KEY`; chat enables automatically when the secret exists. Optionally set `WEB_CHAT_ENABLED=false` to disable it, or `true` to make a missing secret fail the health check. `OPENAI_CHAT_MODEL` and `WEB_CHAT_DAILY_LIMIT` remain optional.
+To enable the portal chat, upload `OPENAI_API_KEY`; chat enables automatically when the secret exists. Optionally set `WEB_CHAT_ENABLED=false` to disable it, or `true` to make a missing secret fail the health check. `OPENAI_CHAT_MODEL` chooses the initial model from `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`; the browser can select any allowlisted model and reasoning level per conversation. `WEB_CHAT_DAILY_LIMIT` remains optional.
 
 ## 7. Create and verify the GitHub webhook
 

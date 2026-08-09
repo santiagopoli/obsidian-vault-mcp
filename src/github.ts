@@ -25,8 +25,8 @@ function headers(token: string, accept = "application/vnd.github+json"): Record<
   };
 }
 
-async function githubFetch<T>(token: string, path: string): Promise<T> {
-  const response = await fetch(`${githubApi}${path}`, { headers: headers(token) });
+async function githubFetch<T>(token: string, path: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(`${githubApi}${path}`, { headers: headers(token), signal });
   if (!response.ok) {
     const requestId = response.headers.get("x-github-request-id");
     throw new GitHubError(
@@ -81,9 +81,10 @@ export async function getMarkdownTree(
   token: string,
   vault: VaultConfig,
   prefix?: string,
+  signal?: AbortSignal,
 ): Promise<MarkdownTree> {
-  const repository = await getRepositoryMetadata(token, vault);
-  return getMarkdownTreeAtRevision(token, vault, repository.defaultBranch, prefix);
+  const repository = await getRepositoryMetadata(token, vault, signal);
+  return getMarkdownTreeAtRevision(token, vault, repository.defaultBranch, prefix, signal);
 }
 
 export interface GitHubRepositoryMetadata {
@@ -91,10 +92,11 @@ export interface GitHubRepositoryMetadata {
   defaultBranch: string;
 }
 
-export async function getRepositoryMetadata(token: string, vault: VaultConfig): Promise<GitHubRepositoryMetadata> {
+export async function getRepositoryMetadata(token: string, vault: VaultConfig, signal?: AbortSignal): Promise<GitHubRepositoryMetadata> {
   const repository = await githubFetch<{ id: number; default_branch: string }>(
     token,
     `/repos/${vault.owner}/${vault.repo}`,
+    signal,
   );
   return { id: String(repository.id), defaultBranch: repository.default_branch };
 }
@@ -104,6 +106,7 @@ export async function getMarkdownTreeAtRevision(
   vault: VaultConfig,
   revision: string,
   prefix?: string,
+  signal?: AbortSignal,
 ): Promise<MarkdownTree> {
   if (!/^[0-9a-f]{40}$/i.test(revision) && !/^[A-Za-z0-9._/-]{1,255}$/.test(revision)) {
     throw new Error("GitHub tree revision is invalid");
@@ -111,6 +114,7 @@ export async function getMarkdownTreeAtRevision(
   const tree = await githubFetch<{ sha: string; tree: GitHubTreeItem[]; truncated: boolean }>(
     token,
     `/repos/${vault.owner}/${vault.repo}/git/trees/${encodeURIComponent(revision)}?recursive=1`,
+    signal,
   );
   if (tree.truncated) {
     throw new Error("Vault tree is too large for a recursive GitHub listing");
@@ -133,6 +137,7 @@ export async function readMarkdownTree(
   token: string,
   vault: VaultConfig,
   tree: MarkdownTree,
+  signal?: AbortSignal,
 ): Promise<VaultDocument[]> {
   if (tree.files.length > maxGraphNotes) {
     throw new Error(`Vault graph is limited to ${maxGraphNotes} Markdown notes; narrow or split this vault`);
@@ -145,7 +150,7 @@ export async function readMarkdownTree(
   const documents: VaultDocument[] = [];
   for (let offset = 0; offset < tree.files.length; offset += graphBlobBatchSize) {
     const files = tree.files.slice(offset, offset + graphBlobBatchSize);
-    const blobs = await readBlobBatch(token, vault, files);
+    const blobs = await readBlobBatch(token, vault, files, signal);
     documents.push(...files.map((file, index) => {
       const blob = blobs[`blob${index}`];
       if (!blob || blob.oid !== file.sha || blob.isBinary || blob.text === null) {
@@ -171,6 +176,7 @@ async function readBlobBatch(
   token: string,
   vault: VaultConfig,
   files: GitHubTreeItem[],
+  signal?: AbortSignal,
 ): Promise<Record<string, GraphQlBlob | null>> {
   const selections = files.map((file, index) => {
     if (!/^[0-9a-f]+$/i.test(file.sha)) throw new Error(`GitHub returned an invalid SHA for '${file.path}'`);
@@ -178,6 +184,7 @@ async function readBlobBatch(
   }).join("\n");
   const response = await fetch(`${githubApi}/graphql`, {
     method: "POST",
+    signal,
     headers: { ...headers(token), "Content-Type": "application/json" },
     body: JSON.stringify({
       query: `query VaultBlobs($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { ${selections} } }`,
@@ -218,11 +225,12 @@ export async function readMarkdownBlobAtSha(
   vault: VaultConfig,
   path: string,
   sha: string,
+  signal?: AbortSignal,
 ): Promise<MarkdownBlob> {
   const normalized = normalizeNotePath(path);
   if (!/^[0-9a-f]{40}$/i.test(sha)) throw new Error("Markdown blob SHA must be a 40-character Git object ID");
 
-  const blobs = await readBlobBatch(token, vault, [{ path: normalized, sha, type: "blob" }]);
+  const blobs = await readBlobBatch(token, vault, [{ path: normalized, sha, type: "blob" }], signal);
   const blob = blobs.blob0;
   if (!blob || blob.oid !== sha || blob.isBinary || blob.text === null) {
     throw new Error(`GitHub returned an unsupported blob for '${normalized}'`);
@@ -452,7 +460,7 @@ function normalizeSearchText(value: string): string {
   return value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase();
 }
 
-function excerptAround(content: string, query: string): string {
+export function excerptAround(content: string, query: string): string {
   const flattened = content.replace(/\s+/g, " ").trim();
   const terms = query.toLowerCase().split(/\s+/).filter((term) => term.length > 1);
   const lower = flattened.toLowerCase();

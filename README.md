@@ -59,10 +59,10 @@ bunx wrangler secret put OPENAI_API_KEY
 ```
 
 - Chat enables automatically when `OPENAI_API_KEY` exists. Set `WEB_CHAT_ENABLED=false` to turn it off explicitly, or `true` to make a missing secret fail the health check.
-- `OPENAI_CHAT_MODEL` defaults to `gpt-5.6-sol`.
+- `OPENAI_CHAT_MODEL` selects the default among `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`; users can choose the model and reasoning level per conversation.
 - `WEB_CHAT_DAILY_LIMIT` defaults to `50` requests per GitHub user per UTC day.
 - Chat history stays in browser memory. Prompt, note text, and answers are not stored in D1.
-- The model receives at most six current notes from one selected vault and every returned citation is checked against those sources.
+- A read-only agent can search, read exact note revisions, and inspect the graph within one selected vault or note. The UI shows its tool activity and aggregate token usage; every citation is checked against retrieved evidence.
 
 See [Web portal and vault chat](docs/web-portal.md) for the API, privacy model, and current multi-user boundary.
 

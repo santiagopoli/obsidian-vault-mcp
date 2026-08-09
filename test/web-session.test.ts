@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Miniflare } from "miniflare";
 import webPortalMigration from "../migrations/0003_web_portal.sql?raw";
+import webChatLeasesMigration from "../migrations/0004_web_chat_leases.sql?raw";
 import {
   consumeWebAuthState,
   cleanupWebPortalState,
@@ -23,7 +24,7 @@ describe("web portal sessions", () => {
       d1Databases: ["EVENT_DB"],
     });
     db = await runtime.getD1Database("EVENT_DB");
-    for (const statement of webPortalMigration.split(";").map((sql) => sql.trim()).filter(Boolean)) {
+    for (const statement of `${webPortalMigration}\n${webChatLeasesMigration}`.split(";").map((sql) => sql.trim()).filter(Boolean)) {
       await db.prepare(statement).run();
     }
   });
@@ -69,10 +70,12 @@ describe("web portal sessions", () => {
       db.prepare("INSERT INTO web_auth_states (state_hash, expires_at) VALUES ('expired', 1)"),
       db.prepare("INSERT INTO web_sessions (session_hash, github_user_id, github_login, csrf_secret, created_at, expires_at) VALUES ('expired', '1', 'owner', 'csrf', 1, 1)"),
       db.prepare("INSERT INTO web_chat_usage (github_user_id, usage_day, request_count) VALUES ('1', '2020-01-01', 1)"),
+      db.prepare("INSERT INTO web_chat_leases (github_user_id, lease_id, expires_at) VALUES ('1', 'expired', 1)"),
     ]);
     await cleanupWebPortalState(db, new Date("2026-08-08T00:00:00Z"));
     expect(await db.prepare("SELECT COUNT(*) AS count FROM web_auth_states").first<{ count: number }>()).toEqual({ count: 0 });
     expect(await db.prepare("SELECT COUNT(*) AS count FROM web_sessions").first<{ count: number }>()).toEqual({ count: 0 });
     expect(await db.prepare("SELECT COUNT(*) AS count FROM web_chat_usage").first<{ count: number }>()).toEqual({ count: 0 });
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM web_chat_leases").first<{ count: number }>()).toEqual({ count: 0 });
   });
 });

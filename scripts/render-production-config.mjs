@@ -45,7 +45,7 @@ if (!/^\d+$/.test(webhookHookId)) fail("GITHUB_WEBHOOK_HOOK_ID must be numeric")
 if (!/^\d+$/.test(webhookRepositoryId)) fail("GITHUB_WEBHOOK_REPOSITORY_ID must be numeric");
 if (!/^[A-Za-z0-9._/-]{1,255}$/.test(webhookDefaultBranch)) fail("GITHUB_WEBHOOK_DEFAULT_BRANCH is invalid");
 if (!repositories.includes(webhookVault)) fail("GITHUB_WEBHOOK_VAULT must be in VAULT_REPOSITORIES");
-if (!/^[A-Za-z0-9._-]{1,100}$/.test(openAiChatModel)) fail("OPENAI_CHAT_MODEL is invalid");
+if (!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].includes(openAiChatModel)) fail("OPENAI_CHAT_MODEL must be gpt-5.6-sol, gpt-5.6-terra, or gpt-5.6-luna");
 if (webChatEnabled && webChatEnabled !== "true" && webChatEnabled !== "false") fail("WEB_CHAT_ENABLED must be true or false");
 if (!/^\d+$/.test(webChatDailyLimit) || Number(webChatDailyLimit) < 1 || Number(webChatDailyLimit) > 1000) {
   fail("WEB_CHAT_DAILY_LIMIT must be an integer between 1 and 1000");
