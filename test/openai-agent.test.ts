@@ -55,6 +55,7 @@ describe("OpenAI vault agent", () => {
       parallel_tool_calls: false,
       truncation: "disabled",
     }));
+    expect(JSON.stringify(requests[0]?.text)).not.toContain("uniqueItems");
     expect(JSON.stringify(requests[1]?.input)).toContain("opaque-reasoning");
     expect(requests[1]?.input).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "function_call_output", call_id: "call_1" }),

@@ -136,7 +136,7 @@ export async function runVaultAgent(
               additionalProperties: false,
               properties: {
                 answer: { type: "string", minLength: 1, maxLength: 16_000 },
-                citation_paths: { type: "array", maxItems: 20, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 500 } },
+                citation_paths: { type: "array", maxItems: 20, items: { type: "string", minLength: 1, maxLength: 500 } },
               },
               required: ["answer", "citation_paths"],
             },
