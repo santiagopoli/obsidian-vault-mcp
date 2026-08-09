@@ -78,6 +78,15 @@ export interface VaultGraphPath {
   max_depth: number;
 }
 
+const VAULT_GRAPH_CACHE_TTL_MS = 5 * 60_000;
+const vaultGraphCache = new Map<string, { graph: VaultGraph; expiresAt: number }>();
+const vaultGraphRequests = new Map<string, Promise<VaultGraph>>();
+
+export function getCachedVaultGraph(vaultId: string): VaultGraph | undefined {
+  const cached = vaultGraphCache.get(vaultId);
+  return cached && cached.expiresAt > Date.now() ? cached.graph : undefined;
+}
+
 export interface SyncDestination {
   id: string;
   provider: "google_drive";
@@ -184,8 +193,29 @@ export async function searchNotes(vaultId: string, query: string): Promise<Searc
   return result.matches;
 }
 
-export async function getVaultGraph(vaultId: string, signal?: AbortSignal): Promise<VaultGraph> {
-  return json(await fetch(`/api/vaults/${encodeURIComponent(vaultId)}/graph`, { signal }));
+export async function getVaultGraph(vaultId: string, signal?: AbortSignal, refresh = false): Promise<VaultGraph> {
+  signal?.throwIfAborted();
+  const cached = vaultGraphCache.get(vaultId);
+  if (!refresh && cached && cached.expiresAt > Date.now()) return cached.graph;
+  let request = vaultGraphRequests.get(vaultId);
+  if (!request || refresh) {
+    const nextRequest = fetch(`/api/vaults/${encodeURIComponent(vaultId)}/graph`)
+      .then((response) => json<VaultGraph>(response))
+      .then((graph) => {
+        if (vaultGraphRequests.get(vaultId) === nextRequest) {
+          vaultGraphCache.set(vaultId, { graph, expiresAt: Date.now() + VAULT_GRAPH_CACHE_TTL_MS });
+        }
+        return graph;
+      })
+      .finally(() => {
+        if (vaultGraphRequests.get(vaultId) === nextRequest) vaultGraphRequests.delete(vaultId);
+      });
+    request = nextRequest;
+    vaultGraphRequests.set(vaultId, nextRequest);
+  }
+  const graph = await request;
+  signal?.throwIfAborted();
+  return graph;
 }
 
 export async function getVaultGraphPath(

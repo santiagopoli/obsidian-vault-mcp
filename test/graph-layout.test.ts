@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { graphDegree, layoutGraph, type GraphLayoutInput } from "../web/src/graphLayout";
+import { graphDegree, layoutGraph, settleGraphLayout, type GraphLayoutInput } from "../web/src/graphLayout";
 
 describe("graph explorer layout", () => {
   it("is deterministic, does not mutate input, and centers the most connected note", () => {
@@ -47,5 +47,33 @@ describe("graph explorer layout", () => {
 
   it("derives display degree from incoming and outgoing link counts", () => {
     expect(graphDegree({ outgoing_count: 3, backlink_count: 5 })).toBe(8);
+  });
+
+  it("keeps a dragged node pinned while connected nodes settle around it", () => {
+    const nodes = [
+      { path: "A.md", degree: 1, orphan: false, x: 100, y: 100, radius: 8 },
+      { path: "B.md", degree: 1, orphan: false, x: 900, y: 600, radius: 8 },
+    ];
+    const settled = settleGraphLayout(nodes, [{ source: "A.md", target: "B.md" }], new Map([["A.md", { x: 240, y: 260 }]]), 20);
+
+    expect(settled[0]).toMatchObject({ path: "A.md", x: 240, y: 260 });
+    expect(settled[1]?.x).toBeLessThan(900);
+    expect(settled[1]?.y).toBeLessThan(600);
+    expect(nodes[0]).toMatchObject({ x: 100, y: 100 });
+  });
+
+  it("separates overlapping nodes without moving them outside the canvas", () => {
+    const settled = settleGraphLayout([
+      { path: "A.md", degree: 0, orphan: true, x: 500, y: 350, radius: 8 },
+      { path: "B.md", degree: 0, orphan: true, x: 500, y: 350, radius: 8 },
+    ], [], new Map(), 20);
+
+    expect(Math.hypot((settled[0]?.x ?? 0) - (settled[1]?.x ?? 0), (settled[0]?.y ?? 0) - (settled[1]?.y ?? 0))).toBeGreaterThan(20);
+    for (const node of settled) {
+      expect(node.x).toBeGreaterThanOrEqual(node.radius);
+      expect(node.x).toBeLessThanOrEqual(1_000 - node.radius);
+      expect(node.y).toBeGreaterThanOrEqual(node.radius);
+      expect(node.y).toBeLessThanOrEqual(700 - node.radius);
+    }
   });
 });
