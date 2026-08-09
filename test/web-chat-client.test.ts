@@ -13,16 +13,21 @@ describe("web chat stream client", () => {
       `${JSON.stringify({ type: "usage", usage })}\n`,
       `${JSON.stringify({ type: "tool", trace })}\n`,
     ];
-    globalThis.fetch = vi.fn(async () => new Response(new ReadableStream({
+    let sentBody: Record<string, unknown> | undefined;
+    globalThis.fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(new ReadableStream({
       pull(controller) {
         const chunk = chunks.shift();
         if (chunk) controller.enqueue(encoder.encode(chunk));
         else controller.error(new Error("connection reset"));
       },
-    }), { status: 200, headers: { "Content-Type": "application/x-ndjson" } })) as typeof fetch;
+      }), { status: 200, headers: { "Content-Type": "application/x-ndjson" } });
+    }) as typeof fetch;
 
     const promise = chat("123", "csrf", {
       question: "Question",
+      mentionedPaths: ["Canon/Luz.md"],
       scope: "vault",
       history: [],
       model: "gpt-5.6-sol",
@@ -34,5 +39,6 @@ describe("web chat stream client", () => {
       usage,
       trace: [trace],
     });
+    expect(sentBody).toEqual(expect.objectContaining({ mentioned_paths: ["Canon/Luz.md"] }));
   });
 });

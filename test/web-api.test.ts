@@ -117,6 +117,62 @@ describe("web API authorization", () => {
     expect(await db.prepare("SELECT COUNT(*) AS count FROM web_chat_usage").first()).toEqual({ count: 0 });
   });
 
+  it("rejects duplicate or excessive mentioned paths before quota or external work", async () => {
+    const created = await createWebSession(db, "123456", "owner");
+    const cookie = created.cookie.split(";", 1)[0] ?? "";
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const request = (mentioned_paths: string[]) => WebApiHandler.request("https://vault.example/vaults/123/chat", {
+      method: "POST",
+      headers: { Cookie: cookie, Origin: "https://vault.example", "X-CSRF-Token": created.session.csrfSecret, "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "hello", mentioned_paths, scope: "vault", history: [], model: "gpt-5.6-sol", reasoning_effort: "medium" }),
+    }, env);
+
+    const duplicate = await request(["Canon/Luz.md", "Canon/Luz.md"]);
+    const excessive = await request(Array.from({ length: 11 }, (_, index) => `Note ${index}.md`));
+
+    expect(duplicate.status).toBe(400);
+    expect(await duplicate.json()).toEqual({ error: "invalid_chat_request" });
+    expect(excessive.status).toBe(400);
+    expect(await excessive.json()).toEqual({ error: "invalid_chat_request" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM web_chat_usage").first()).toEqual({ count: 0 });
+  });
+
+  it("rejects missing and out-of-scope note mentions before contacting the model", async () => {
+    const created = await createWebSession(db, "123456", "owner");
+    const cookie = created.cookie.split(";", 1)[0] ?? "";
+    const modelRequests: string[] = [];
+    globalThis.fetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/repos/owner/vault")) return Response.json({ id: 123, default_branch: "main" });
+      if (url.includes("/repos/owner/vault/git/trees/main")) return Response.json({
+        sha: "c".repeat(40),
+        truncated: false,
+        tree: [
+          { path: "Canon/Luz.md", type: "blob", sha: "a".repeat(40), size: 20 },
+          { path: "Private/Other.md", type: "blob", sha: "b".repeat(40), size: 20 },
+        ],
+      });
+      modelRequests.push(url);
+      throw new Error(`unexpected request: ${url}`);
+    }) as typeof fetch;
+    const request = (mentioned_paths: string[], scope: "note" | "vault", activePath?: string) => WebApiHandler.request("https://vault.example/vaults/123/chat", {
+      method: "POST",
+      headers: { Cookie: cookie, Origin: "https://vault.example", "X-CSRF-Token": created.session.csrfSecret, "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "hello", mentioned_paths, scope, activePath, history: [], model: "gpt-5.6-sol", reasoning_effort: "medium" }),
+    }, env);
+
+    const missing = await request(["Missing.md"], "vault");
+    const outside = await request(["Private/Other.md"], "note", "Canon/Luz.md");
+
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({ error: "invalid_note_mention" });
+    expect(outside.status).toBe(400);
+    expect(await outside.json()).toEqual({ error: "invalid_note_mention" });
+    expect(modelRequests).toEqual([]);
+  });
+
   it("runs the selected model and reasoning level and returns aggregate agent metadata", async () => {
     const created = await createWebSession(db, "123456", "owner");
     const cookie = created.cookie.split(";", 1)[0] ?? "";

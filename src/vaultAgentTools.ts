@@ -61,13 +61,13 @@ export const vaultAgentToolDefinitions = [
   {
     type: "function",
     name: "read_notes",
-    description: "Read up to six exact Markdown notes. Use exact paths returned by list or search. Read the notes needed to support the answer.",
+    description: "Read up to ten exact Markdown notes. Use exact paths returned by list or search. Read the notes needed to support the answer.",
     strict: true,
     parameters: {
       type: "object",
       additionalProperties: false,
       properties: {
-        paths: { type: "array", minItems: 1, maxItems: 6, items: { type: "string", minLength: 1, maxLength: 500 } },
+        paths: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1, maxLength: 500 } },
       },
       required: ["paths"],
     },
@@ -133,7 +133,7 @@ export const vaultAgentToolDefinitions = [
 
 const listSchema = z.object({ prefix: z.string().max(500).nullable(), limit: z.number().int().min(1).max(50), offset: z.number().int().min(0).max(1_000) }).strict();
 const searchSchema = z.object({ query: z.string().trim().min(2).max(200), prefix: z.string().max(500).nullable(), limit: z.number().int().min(1).max(10) }).strict();
-const readSchema = z.object({ paths: z.array(z.string().min(1).max(500)).min(1).max(6) }).strict();
+const readSchema = z.object({ paths: z.array(z.string().min(1).max(500)).min(1).max(10) }).strict();
 const linksSchema = z.object({ path: z.string().min(1).max(500) }).strict();
 const graphSchema = z.object({ limit: z.number().int().min(1).max(20) }).strict();
 const neighborsSchema = z.object({
@@ -192,6 +192,17 @@ export class VaultAgentToolbox {
 
   evidence(): Map<string, AgentTraceNote> {
     return new Map(this.evidenceByPath);
+  }
+
+  requireMentionedPaths(paths: string[]): AgentTraceNote[] {
+    const notes: AgentTraceNote[] = [];
+    for (const path of paths) {
+      const file = this.filesByPath.get(path);
+      if (!file) throw new Error("Mentioned note is not present in the vault snapshot");
+      this.requireAllowedPath(path);
+      notes.push({ path, sha: file.sha });
+    }
+    return notes;
   }
 
   async execute(name: string, rawArguments: string, step: number): Promise<AgentToolExecution> {
@@ -256,15 +267,16 @@ export class VaultAgentToolbox {
     });
     const notes: Array<{ path: string; sha: string; content: string; truncated: boolean }> = [];
     let nextReturnedCharacters = this.returnedCharacters;
+    const remainingForCall = 80_000 - nextReturnedCharacters;
+    if (remainingForCall < requested.length) throw new Error("Agent note-read budget was exhausted");
+    const perNoteLimit = Math.min(16_000, Math.floor(remainingForCall / requested.length));
     const loadedDocuments: VaultDocument[] = [];
     for (const { path, file } of requested) {
       this.signal?.throwIfAborted();
       const cached = this.documentCache.get(path);
       const note = cached ?? await readMarkdownBlobAtSha(this.token, this.vault, path, file.sha, this.signal);
       this.signal?.throwIfAborted();
-      const remaining = 80_000 - nextReturnedCharacters;
-      if (remaining <= 0) throw new Error("Agent note-read budget was exhausted");
-      const content = note.content.slice(0, Math.min(16_000, remaining));
+      const content = note.content.slice(0, perNoteLimit);
       nextReturnedCharacters += content.length;
       loadedDocuments.push({ path, sha: note.sha, content: note.content });
       notes.push({ path, sha: note.sha, content, truncated: content.length < note.content.length });
