@@ -4,10 +4,11 @@ import { allowedGitHubUserId, configuredVaults, webChatEnabled } from "./config"
 import {
   getMarkdownTree,
   getRepositoryMetadata,
+  rankMarkdownDocuments,
   readMarkdownBlobAtSha,
   readMarkdownFile,
+  readMarkdownTree,
   searchMarkdownFiles,
-  searchMarkdownPaths,
 } from "./github";
 import { answerVaultQuestion, chatSearchTerms, hashedSafetyIdentifier, VaultChatProviderError } from "./openaiChat";
 import { clearWebSessionCookie, readWebSession, revokeWebSession, secureEquals, type WebSession } from "./webSession";
@@ -124,9 +125,8 @@ app.post("/vaults/:vaultId/chat", async (context) => {
   try { body = JSON.parse(rawBody); } catch { body = undefined; }
   const parsed = chatSchema.safeParse(body);
   if (!parsed.success) throw new WebApiError(400, "invalid_chat_request");
-  await reserveChatRequest(context.env, session.githubUserId);
-
   const retrieved = await retrieveSources(context.env, vault, parsed.data);
+  await reserveChatRequest(context.env, session.githubUserId);
   const result = await answerVaultQuestion({
     apiKey: context.env.OPENAI_API_KEY,
     model: context.env.OPENAI_CHAT_MODEL?.trim() || "gpt-5.6-sol",
@@ -167,32 +167,51 @@ interface ChatRequest {
 async function retrieveSources(env: Env, vault: VaultConfig, request: ChatRequest) {
   const tree = await getMarkdownTree(env.GITHUB_VAULT_TOKEN, vault);
   const filesByPath = new Map(tree.files.map((file) => [file.path, file]));
+  const visibleDocuments = (request.scope === "note" ? [] : await readMarkdownTree(env.GITHUB_VAULT_TOKEN, vault, tree)).filter((document) => {
+    if (request.scope !== "folder" || !request.pathPrefix) return true;
+    return document.path.startsWith(`${request.pathPrefix.replace(/\/+$/, "")}/`);
+  });
+  const documentsByPath = new Map<string, { sha: string; content: string }>();
   const paths: string[] = [];
+  let maxSources = 6;
   if (request.activePath && filesByPath.has(request.activePath)) paths.push(request.activePath);
   if (request.scope !== "note") {
-    const prefix = request.scope === "folder" ? request.pathPrefix : undefined;
-    for (const term of chatSearchTerms(request.question)) {
-      const result = await searchMarkdownPaths(env.GITHUB_VAULT_TOKEN, vault, term, prefix, 5, 0);
-      for (const match of result.matches) {
-        if (!paths.includes(match.path)) paths.push(match.path);
-        if (paths.length >= 6) break;
-      }
-      if (paths.length >= 6) break;
+    const terms = chatSearchTerms(request.question);
+    const matches = terms.length > 0
+      ? rankMarkdownDocuments(vault, tree.revision, visibleDocuments, terms, 6, 0, false).matches
+      : [];
+    if (matches.length === 0) maxSources = 12;
+    const selected = matches.length > 0 ? matches : representativeDocuments(visibleDocuments, maxSources);
+    for (const match of selected) {
+      documentsByPath.set(match.path, match);
+      if (!paths.includes(match.path)) paths.push(match.path);
+      if (paths.length >= maxSources) break;
     }
   }
 
   let remainingCharacters = 50_000;
   const sources = [];
-  for (const path of paths.slice(0, 6)) {
+  for (const path of paths.slice(0, maxSources)) {
     if (remainingCharacters <= 0) break;
     const file = filesByPath.get(path);
     if (!file) continue;
-    const note = await readMarkdownBlobAtSha(env.GITHUB_VAULT_TOKEN, vault, path, file.sha);
+    const note = documentsByPath.get(path) ?? await readMarkdownBlobAtSha(env.GITHUB_VAULT_TOKEN, vault, path, file.sha);
     const content = note.content.slice(0, Math.min(12_000, remainingCharacters));
     remainingCharacters -= content.length;
     sources.push({ id: `S${sources.length + 1}`, path, sha: note.sha, content });
   }
   return { revision: tree.revision, sources };
+}
+
+function representativeDocuments(documents: Array<{ path: string; sha: string; content: string }>, limit: number) {
+  return [...documents].sort((left, right) => {
+    const score = (path: string) => {
+      const lower = path.toLocaleLowerCase();
+      const preferred = /(readme|index|overview|summary|canon|story|world|character|personaje)/.test(lower) ? 30 : 0;
+      return preferred - path.split("/").length * 3;
+    };
+    return score(right.path) - score(left.path) || left.path.localeCompare(right.path);
+  }).slice(0, limit);
 }
 
 async function optionalAuthorizedSession(env: Env, cookie: string | undefined): Promise<WebSession | undefined> {

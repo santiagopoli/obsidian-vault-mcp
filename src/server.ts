@@ -253,7 +253,7 @@ export function createServer(): McpServer {
     "obsidian_search_notes",
     {
       title: "Search Obsidian notes",
-      description: "Search the contents of Markdown notes in one allowed vault using GitHub code search, returning paths and excerpts.",
+      description: "Search visible Markdown paths and contents in one allowed vault at an exact Git revision, returning ranked paths and excerpts.",
       inputSchema: {
         vault: z.string().min(1).max(200),
         query: z.string().min(2).max(200),

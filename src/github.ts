@@ -351,48 +351,62 @@ async function optionalContentFile(
 
 export interface SearchMatch {
   path: string;
+  sha: string;
   excerpt: string;
   htmlUrl: string;
 }
 
-export interface SearchPathMatch {
+export interface SearchDocumentMatch {
   path: string;
   htmlUrl: string;
+  sha: string;
+  content: string;
 }
 
-export async function searchMarkdownPaths(
+export async function searchMarkdownDocuments(
   token: string,
   vault: VaultConfig,
-  query: string,
+  queries: string[],
   pathPrefix: string | undefined,
   limit: number,
   offset: number,
-): Promise<{ total: number; incomplete: boolean; matches: SearchPathMatch[] }> {
-  const normalizedQuery = query.trim();
-  if (normalizedQuery.length < 2 || normalizedQuery.length > 200) {
-    throw new Error("Search query must contain between 2 and 200 characters");
-  }
-  if (/\b(repo|org|user|owner):/i.test(normalizedQuery)) {
-    throw new Error("Repository-scoping operators are not allowed in search queries");
-  }
-
+  requireEveryTerm = true,
+): Promise<{ revision: string; total: number; matches: SearchDocumentMatch[] }> {
+  const tree = await getMarkdownTree(token, vault, pathPrefix);
   const normalizedPrefix = normalizePrefix(pathPrefix);
-  const qualifiers = [
-    normalizedQuery,
-    `repo:${vault.fullName}`,
-    "extension:md",
-    ...(normalizedPrefix ? [`path:${normalizedPrefix}`] : []),
-  ].join(" ");
-  const page = Math.floor(offset / limit) + 1;
-  const result = await githubFetch<{
-    total_count: number;
-    incomplete_results: boolean;
-    items: Array<{ path: string; html_url: string }>;
-  }>(token, `/search/code?q=${encodeURIComponent(qualifiers)}&per_page=${limit}&page=${page}`);
+  const documents = (await readMarkdownTree(token, vault, tree)).filter(
+    (document) => !normalizedPrefix || document.path.startsWith(`${normalizedPrefix}/`),
+  );
+  return rankMarkdownDocuments(vault, tree.revision, documents, queries, limit, offset, requireEveryTerm);
+}
+
+export function rankMarkdownDocuments(
+  vault: VaultConfig,
+  revision: string,
+  documents: VaultDocument[],
+  queries: string[],
+  limit: number,
+  offset: number,
+  requireEveryTerm = true,
+): { revision: string; total: number; matches: SearchDocumentMatch[] } {
+  const normalizedQueries = queries.map(validateSearchQuery);
+  if (normalizedQueries.length === 0) throw new Error("Search requires at least one query");
+  const ranked = documents.flatMap((document) => {
+    const searchablePath = normalizeSearchText(document.path);
+    const searchableContent = normalizeSearchText(document.content);
+    const scores = normalizedQueries.map((query) => scoreSearchMatch(searchablePath, searchableContent, query));
+    const matched = requireEveryTerm ? scores.every((score) => score > 0) : scores.some((score) => score > 0);
+    if (!matched) return [];
+    return [{ document, score: scores.reduce((total, score) => total + score, 0) }];
+  }).sort((left, right) => right.score - left.score || left.document.path.localeCompare(right.document.path));
+
   return {
-    total: result.total_count,
-    incomplete: result.incomplete_results,
-    matches: result.items.map((item) => ({ path: item.path, htmlUrl: item.html_url })),
+    revision,
+    total: ranked.length,
+    matches: ranked.slice(offset, offset + limit).map(({ document }) => ({
+      ...document,
+      htmlUrl: `https://github.com/${vault.fullName}/blob/${revision}/${encodePath(document.path)}`,
+    })),
   };
 }
 
@@ -404,21 +418,38 @@ export async function searchMarkdownFiles(
   limit: number,
   offset: number,
 ): Promise<{ total: number; incomplete: boolean; matches: SearchMatch[] }> {
-  const normalizedQuery = query.trim();
-  const result = await searchMarkdownPaths(token, vault, query, pathPrefix, limit, offset);
+  const result = await searchMarkdownDocuments(token, vault, [query], pathPrefix, limit, offset);
+  return {
+    total: result.total,
+    incomplete: false,
+    matches: result.matches.map((item) => ({
+      path: item.path,
+      sha: item.sha,
+      htmlUrl: item.htmlUrl,
+      excerpt: excerptAround(item.content, query.trim()),
+    })),
+  };
+}
 
-  const matches = await Promise.all(
-    result.matches.map(async (item) => {
-      const file = await readMarkdownFile(token, vault, item.path);
-      return {
-        path: item.path,
-        htmlUrl: item.htmlUrl,
-        excerpt: excerptAround(file.content, normalizedQuery),
-      };
-    }),
-  );
+function validateSearchQuery(query: string): string {
+  const normalized = normalizeSearchText(query.trim());
+  if (normalized.length < 2 || normalized.length > 200) {
+    throw new Error("Search query must contain between 2 and 200 characters");
+  }
+  return normalized;
+}
 
-  return { total: result.total, incomplete: result.incomplete, matches };
+function scoreSearchMatch(path: string, content: string, query: string): number {
+  const terms = query.split(/\s+/).filter(Boolean);
+  if (!terms.every((term) => path.includes(term) || content.includes(term))) return 0;
+  let score = terms.reduce((total, term) => total + (path.includes(term) ? 12 : 0) + (content.includes(term) ? 2 : 0), 0);
+  if (path.includes(query)) score += 40;
+  if (content.includes(query)) score += 20;
+  return score;
+}
+
+function normalizeSearchText(value: string): string {
+  return value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase();
 }
 
 function excerptAround(content: string, query: string): string {

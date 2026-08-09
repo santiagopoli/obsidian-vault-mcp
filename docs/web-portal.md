@@ -6,7 +6,7 @@ The deployment root serves a same-origin React portal from Cloudflare Workers St
 
 - Sign in with the GitHub identity already authorized by this deployment.
 - Switch between every repository in the explicit vault allowlist.
-- Browse up to 200 visible Markdown paths, filter paths locally, and search contents through GitHub.
+- Browse the visible Markdown folder tree and search paths and contents against an exact Git snapshot.
 - Render Markdown with raw HTML disabled. Images embedded by notes are not fetched by the portal.
 - Ask either the current note or the selected vault. Answers include citations that open the exact source note.
 
@@ -59,4 +59,4 @@ This release supports many vaults for the one immutable GitHub owner configured 
 
 Shared hosting requires the GitHub App installation architecture in [Multi-user architecture](multi-user.md): tenant memberships, immutable repository grants, and a fresh short-lived installation token restricted to the exact repository for every operation. Do not turn `ALLOWED_GITHUB_USER_ID` into a list while retaining the shared repository token.
 
-Vector search remains deferred until its index can enforce tenant, repository, path, and revision filters structurally and delete all derived embeddings when access is revoked.
+Search is currently deterministic lexical retrieval over the canonical Git tree and exact blobs. It does not use a vector database. Vector search remains deferred until its index can enforce tenant, repository, path, and revision filters structurally and delete all derived embeddings when access is revoked.
