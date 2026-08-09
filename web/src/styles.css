@@ -64,6 +64,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .file-item strong, .file-item small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-item strong { font-size: 12px; font-weight: 600; }
 .file-item small { margin-top: 2px; color: var(--muted); font-size: 9px; }
+.note-tree { padding-left: 4px; padding-right: 4px; }
+.folder-item { width: 100%; display: grid; grid-template-columns: 13px 18px minmax(0, 1fr) auto; align-items: center; gap: 4px; border: 0; background: transparent; color: #57534d; text-align: left; padding-top: 7px; padding-bottom: 7px; padding-right: 9px; border-radius: 7px; cursor: pointer; }
+.folder-item:hover { background: #e8e5de; }
+.folder-item strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 650; }
+.folder-item small { color: var(--muted); font: 8px var(--mono); }
+.folder-item svg { width: 15px; fill: none; stroke: currentColor; stroke-width: 1.35; }
+.folder-item .chevron { width: 11px; transition: transform .12s ease; }
+.folder-item .chevron.expanded { transform: rotate(90deg); }
+.note-tree .file-item { grid-template-columns: 18px minmax(0, 1fr); padding-top: 6px; padding-bottom: 6px; }
 .section-label { padding: 5px 8px 9px; display: flex; justify-content: space-between; color: var(--muted); font: 500 9px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
 .section-label button { border: 0; background: transparent; color: var(--accent); cursor: pointer; font: inherit; }
 .result-card { width: 100%; display: block; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; padding: 12px 8px; cursor: pointer; }
@@ -90,6 +99,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .reader article hr { border: 0; border-top: 1px solid var(--line); margin: 42px 0; }
 .reader article table { border-collapse: collapse; font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; width: 100%; }
 .reader article th, .reader article td { border: 1px solid var(--line); padding: 9px; text-align: left; }
+.reader article ul, .reader article ol { padding-left: 28px; }
+.reader article li { margin: 5px 0; }
+.reader article input[type="checkbox"] { accent-color: var(--accent); }
+.reader article del { color: var(--muted); }
+.document-properties { margin: 22px 0 34px; padding: 12px 15px; border: 1px solid var(--line); border-radius: 9px; background: #f5f2eb; font: 11px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
+.document-properties div { display: grid; grid-template-columns: minmax(90px, 28%) 1fr; gap: 12px; padding: 4px 0; }
+.document-properties dt { color: var(--muted); font-weight: 600; }
+.document-properties dd { margin: 0; overflow-wrap: anywhere; }
 .document-meta { display: flex; justify-content: space-between; gap: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--line); color: var(--muted); font: 500 9px/1.4 var(--mono); }
 .document-meta a { font: inherit !important; text-decoration: none !important; }
 .blocked-media { display: inline-block; padding: 8px 12px; border: 1px dashed var(--line); color: var(--muted); font: 11px Inter, ui-sans-serif, system-ui, sans-serif; }

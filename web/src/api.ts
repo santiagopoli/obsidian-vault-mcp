@@ -29,6 +29,7 @@ export interface Note extends NoteSummary {
 
 export interface SearchMatch {
   path: string;
+  sha: string;
   excerpt: string;
   htmlUrl: string;
 }
@@ -60,6 +61,18 @@ export async function getNotes(vaultId: string, offset = 0): Promise<{ notes: No
     `/api/vaults/${encodeURIComponent(vaultId)}/notes?limit=200&offset=${offset}`,
   ));
   return { notes: result.notes, total: result.total, hasMore: result.has_more };
+}
+
+export async function getAllNotes(vaultId: string): Promise<{ notes: NoteSummary[]; total: number }> {
+  const notes: NoteSummary[] = [];
+  let total = 0;
+  do {
+    const page = await getNotes(vaultId, notes.length);
+    notes.push(...page.notes);
+    total = page.total;
+    if (!page.hasMore) break;
+  } while (notes.length < 1_000);
+  return { notes, total };
 }
 
 export async function getNote(vaultId: string, path: string, sha?: string): Promise<Note> {
