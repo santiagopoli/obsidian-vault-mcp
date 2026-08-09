@@ -66,10 +66,23 @@ export function settleGraphLayout(
   const indexedEdges = edges.flatMap(({ source, target }) => {
     const sourceIndex = indexByPath.get(source);
     const targetIndex = indexByPath.get(target);
-    return sourceIndex === undefined || targetIndex === undefined || sourceIndex === targetIndex
-      ? []
-      : [[sourceIndex, targetIndex] as const];
+    if (sourceIndex === undefined || targetIndex === undefined || sourceIndex === targetIndex) return [];
+    const sourceNode = positioned[sourceIndex];
+    const targetNode = positioned[targetIndex];
+    if (!sourceNode || !targetNode) return [];
+    const restLength = Math.max(
+      sourceNode.radius + targetNode.radius + 18,
+      Math.hypot(targetNode.x - sourceNode.x, targetNode.y - sourceNode.y),
+    );
+    return [[sourceIndex, targetIndex, restLength] as const];
   });
+  for (const node of positioned) {
+    const fixed = pinned.get(node.path);
+    if (fixed) {
+      node.x = clamp(fixed.x, node.radius, width - node.radius);
+      node.y = clamp(fixed.y, node.radius, height - node.radius);
+    }
+  }
   const cellSize = 64;
 
   for (let iteration = 0; iteration < iterations; iteration += 1) {
@@ -87,15 +100,14 @@ export function settleGraphLayout(
       else grid.set(key, [index]);
     });
 
-    for (const [sourceIndex, targetIndex] of indexedEdges) {
+    for (const [sourceIndex, targetIndex, restLength] of indexedEdges) {
       const source = positioned[sourceIndex];
       const target = positioned[targetIndex];
       if (!source || !target) continue;
       const dx = target.x - source.x;
       const dy = target.y - source.y;
       const distance = Math.max(1, Math.hypot(dx, dy));
-      const preferredDistance = 62 + source.radius + target.radius;
-      const pull = (distance - preferredDistance) * .018;
+      const pull = (distance - restLength) * .018;
       const unitX = dx / distance;
       const unitY = dy / distance;
       forceX[sourceIndex] += unitX * pull;

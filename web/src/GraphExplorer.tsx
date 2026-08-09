@@ -19,7 +19,7 @@ interface CachedGraphLayout {
 
 type GraphDrag =
   | { kind: "canvas"; pointerId: number; clientX: number; clientY: number; viewport: GraphViewport }
-  | { kind: "node"; pointerId: number; path: string; offsetX: number; offsetY: number };
+  | { kind: "node"; pointerId: number; path: string; offsetX: number; offsetY: number; clientX: number; clientY: number; active: boolean };
 
 const graphLayoutCache = new Map<string, CachedGraphLayout>();
 
@@ -195,9 +195,17 @@ export function GraphExplorer({ vaultId, onClose, onOpenNote, onAskAboutNote }: 
     const point = graphPoint(event.clientX, event.clientY);
     if (!point) return;
     canvasRef.current?.setPointerCapture(event.pointerId);
-    dragRef.current = { kind: "node", pointerId: event.pointerId, path: node.path, offsetX: point.x - node.x, offsetY: point.y - node.y };
+    dragRef.current = {
+      kind: "node",
+      pointerId: event.pointerId,
+      path: node.path,
+      offsetX: point.x - node.x,
+      offsetY: point.y - node.y,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      active: false,
+    };
     dragMovedRef.current = false;
-    setDraggingNode(node.path);
     setSelectedPath(node.path);
   }
 
@@ -206,9 +214,12 @@ export function GraphExplorer({ vaultId, onClose, onOpenNote, onAskAboutNote }: 
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!drag || !rect || drag.pointerId !== event.pointerId) return;
     if (drag.kind === "node") {
+      if (!drag.active && Math.hypot(event.clientX - drag.clientX, event.clientY - drag.clientY) < 5) return;
+      drag.active = true;
       const point = graphPoint(event.clientX, event.clientY);
       if (!point) return;
       dragMovedRef.current = true;
+      setDraggingNode(drag.path);
       const node = positions.get(drag.path);
       if (!node) return;
       const pinned = new Map(pinnedPositionsRef.current);
@@ -236,7 +247,7 @@ export function GraphExplorer({ vaultId, onClose, onOpenNote, onAskAboutNote }: 
 
   function stopDrag(event: ReactPointerEvent<SVGSVGElement>) {
     if (dragRef.current?.pointerId !== event.pointerId) return;
-    const wasNodeDrag = dragRef.current.kind === "node";
+    const wasNodeDrag = dragRef.current.kind === "node" && dragRef.current.active;
     dragRef.current = undefined;
     setPanning(false);
     setDraggingNode("");
