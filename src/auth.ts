@@ -3,7 +3,7 @@ import {
   type AuthRequest,
   type ClientInfo,
 } from "@cloudflare/workers-oauth-provider";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { allowedGitHubUserId, configuredVaults, resolveVault, vaultAccess, webChatEnabled } from "./config";
 import { defaultChatModel } from "./chatModels";
 import { parseAutomationConfig } from "./automations/config";
@@ -269,9 +269,20 @@ app.get("/healthz", async (context) => {
   return context.json({ ok: true, service: "obsidian-vault-mcp" });
 });
 
-app.get("/", (context) => context.env.ASSETS.fetch(context.req.raw));
 app.get("/assets/*", (context) => context.env.ASSETS.fetch(context.req.raw));
-app.get("*", (context) => context.env.ASSETS.fetch(context.req.raw));
+app.get("/", serveAppShell);
+app.get("/graph", serveAppShell);
+app.get("/notes/*", serveAppShell);
+app.get("/vaults/:vaultId", serveAppShell);
+app.get("/vaults/:vaultId/graph", serveAppShell);
+app.get("/vaults/:vaultId/notes/*", serveAppShell);
+
+function serveAppShell(context: Context<{ Bindings: Env }>) {
+  const url = new URL(context.req.url);
+  url.pathname = "/";
+  url.search = "";
+  return context.env.ASSETS.fetch(new Request(url, context.req.raw));
+}
 
 function consentPage(consentId: string, pending: PendingConsent, repositories: string[]): string {
   const permissions = pending.grantedScopes.map((scope) => `<li>${scope === writeScope ? "Create and update Markdown notes" : "Read notes, links, tags, and graph metadata"}</li>`).join("");
