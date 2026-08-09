@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildVaultGraph, findShortestPath, noteByPath } from "../src/graph";
+import { buildVaultGraph, findShortestPath, isGraphOrphan, noteByPath } from "../src/graph";
 import type { VaultDocument } from "../src/graph";
 
 function document(path: string, content: string): VaultDocument {
@@ -93,6 +93,8 @@ relationships:
     expect(findShortestPath(graph, "A.md", "A.md", "both", 1)).toEqual(["A.md"]);
     expect(findShortestPath(graph, "A.md", "E.md", "both", 4)).toBeUndefined();
     expect(findShortestPath(graph, "A.md", "D.md", "outgoing", 1)).toBeUndefined();
+    expect(isGraphOrphan(graph, "E.md")).toBe(true);
+    expect(isGraphOrphan(graph, "A.md")).toBe(false);
   });
 
   test("does not treat local headings, attachments, or self-links as graph connectivity", () => {
@@ -105,5 +107,6 @@ relationships:
     ]);
     const externallyConnected = graph.edges.some((edge) => edge.source === "Solo.md" && edge.target !== "Solo.md");
     expect(externallyConnected).toBe(false);
+    expect(isGraphOrphan(graph, "Solo.md")).toBe(true);
   });
 });

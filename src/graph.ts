@@ -145,6 +145,11 @@ export function noteByPath(graph: VaultGraph, path: string): GraphNote | undefin
   return folded.length === 1 ? folded[0] : undefined;
 }
 
+export function isGraphOrphan(graph: VaultGraph, path: string): boolean {
+  return !graph.edges.some((edge) =>
+    (edge.source === path && edge.target !== path) || (edge.target === path && edge.source !== path));
+}
+
 export function findShortestPath(
   graph: VaultGraph,
   source: string,

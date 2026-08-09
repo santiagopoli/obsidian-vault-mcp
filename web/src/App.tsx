@@ -31,6 +31,7 @@ import {
 } from "./api";
 import { buildNoteTree, type NoteTreeNode } from "./noteTree";
 import { markdownLinkTarget, prepareObsidianMarkdown, resolveInternalNotePath } from "./obsidianMarkdown";
+import { GraphExplorer } from "./GraphExplorer";
 
 type ChatMessage = {
   id: string;
@@ -86,8 +87,10 @@ export function App() {
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<SyncFeedback>();
   const [syncWatch, setSyncWatch] = useState<SyncWatch>();
+  const [graphOpen, setGraphOpen] = useState(false);
   const vaultIdRef = useRef(vaultId);
   const chatAbortRef = useRef<AbortController | undefined>(undefined);
+  const graphQuestionRef = useRef<string | undefined>(undefined);
   const syncTriggerRef = useRef<HTMLButtonElement>(null);
   const syncDialogRef = useRef<HTMLElement>(null);
   const syncCloseRef = useRef<HTMLButtonElement>(null);
@@ -264,7 +267,8 @@ export function App() {
     setAsking(false);
     setPendingActivity(undefined);
     setMessages([]);
-    setQuestion("");
+    setQuestion(graphQuestionRef.current ?? "");
+    graphQuestionRef.current = undefined;
   }, [chatContextKey]);
 
   const noteTree = useMemo(() => buildNoteTree(notes, filter), [filter, notes]);
@@ -456,7 +460,7 @@ export function App() {
             {vaults.map((vault) => <option key={vault.id} value={vault.id}>{vault.repository}</option>)}
           </select>
         </div>
-        <div className="account"><span>@{session.user.login}</span><button ref={syncTriggerRef} className="text-button" onClick={openSyncSettings}>Sync</button><button className="text-button" onClick={signOut}>Sign out</button></div>
+        <div className="account"><span>@{session.user.login}</span><button className="text-button" onClick={() => setGraphOpen(true)}>Graph</button><button ref={syncTriggerRef} className="text-button" onClick={openSyncSettings}>Sync</button><button className="text-button" onClick={signOut}>Sign out</button></div>
       </header>
 
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError(undefined)} aria-label="Dismiss">×</button></div>}
@@ -583,6 +587,16 @@ export function App() {
           <p className="privacy-note">Chat is ephemeral. Answers may be wrong; verify citations.</p>
         </aside>
       </div>
+      {graphOpen && vaultId && <GraphExplorer
+        vaultId={vaultId}
+        onClose={() => setGraphOpen(false)}
+        onOpenNote={(path) => { setSelectedSha(undefined); setSelectedPath(path); setMobilePane("note"); setGraphOpen(false); }}
+        onAskAboutNote={(path) => {
+          const prompt = "Explain this note and how it connects to the rest of the vault.";
+          if (chatContextRef.current === `${vaultId}:note:${path}`) setQuestion(prompt); else graphQuestionRef.current = prompt;
+          setSelectedSha(undefined); setSelectedPath(path); setChatScope("note"); setMobilePane("chat"); setGraphOpen(false);
+        }}
+      />}
       {syncOpen && <div className="sync-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeSyncSettings(); }}>
         <section ref={syncDialogRef} className="sync-dialog" role="dialog" aria-modal="true" aria-labelledby="sync-title" aria-describedby="sync-description">
           <div className="sync-heading"><div><span className="eyebrow">Callback destinations</span><h2 id="sync-title">Vault sync</h2></div><button ref={syncCloseRef} onClick={closeSyncSettings} aria-label="Close sync settings">×</button></div>
@@ -719,6 +733,8 @@ function toolLabel(tool: AgentTraceEvent["tool"]) {
     read_notes: "Read notes",
     get_note_links: "Checked links",
     get_graph_overview: "Inspected graph",
+    find_graph_path: "Traced a connection",
+    get_graph_neighbors: "Inspected connected notes",
   };
   return labels[tool];
 }

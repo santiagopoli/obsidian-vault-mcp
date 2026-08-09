@@ -85,6 +85,28 @@ describe("vault agent tools", () => {
     await expect(read).rejects.toThrow();
     expect(toolbox.evidence()).toEqual(new Map());
   });
+
+  it("lets the agent inspect neighbors and explain the shortest graph trail", async () => {
+    globalThis.fetch = snapshotFetch() as unknown as typeof fetch;
+    const toolbox = await VaultAgentToolbox.create(env, vault, "vault");
+
+    const neighbors = await toolbox.execute("get_graph_neighbors", JSON.stringify({
+      path: "Canon/Luz.md",
+      direction: "both",
+      limit: 10,
+    }), 1);
+    const trail = await toolbox.execute("find_graph_path", JSON.stringify({
+      from_path: "Canon/Luz.md",
+      to_path: "Private/Other.md",
+      direction: "both",
+      max_depth: 4,
+    }), 2);
+
+    expect(neighbors.trace).toMatchObject({ tool: "get_graph_neighbors", status: "completed" });
+    expect(neighbors.output).toContain("Private/Other.md");
+    expect(trail.trace).toMatchObject({ tool: "find_graph_path", status: "completed" });
+    expect(JSON.parse(trail.output).path).toEqual(["Canon/Luz.md", "Private/Other.md"]);
+  });
 });
 
 function snapshotFetch() {
@@ -101,7 +123,7 @@ function snapshotFetch() {
     });
     if (url.endsWith("/graphql")) return Response.json({
       data: { repository: {
-        blob0: { oid: "a".repeat(40), byteSize: 20, isBinary: false, text: "# Luz\n\nLuz body." },
+        blob0: { oid: "a".repeat(40), byteSize: 20, isBinary: false, text: "# Luz\n\nLuz body. [[Private/Other]]" },
         blob1: { oid: "b".repeat(40), byteSize: 20, isBinary: false, text: "# Other\n\nOther body." },
       } },
     });

@@ -4,12 +4,12 @@ import { getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
 import { configuredVaults, resolveVault, vaultAccess } from "./config";
 import { readScope, writeScope } from "./authPolicy";
-import { getMarkdownTree, listMarkdownFiles, readMarkdownFile, readMarkdownTree, searchMarkdownFiles, writeMarkdownFile } from "./github";
-import { buildVaultGraph, findShortestPath, noteByPath } from "./graph";
+import { listMarkdownFiles, readMarkdownFile, searchMarkdownFiles, writeMarkdownFile } from "./github";
+import { findShortestPath, isGraphOrphan, noteByPath } from "./graph";
 import { parseAutomationConfig } from "./automations/config";
 import { listAutomationRuns, listVaultEvents } from "./eventStore";
-import type { VaultGraph } from "./graph";
-import type { AuthProps, Env, VaultConfig } from "./types";
+import type { AuthProps, Env } from "./types";
+import { loadVaultGraph } from "./vaultGraphSnapshot";
 
 const responseFormat = z.enum(["markdown", "json"]).default("markdown");
 
@@ -402,7 +402,7 @@ export function createServer(): McpServer {
         tags: note.tags,
         incoming_count: note.backlinks.length,
         outgoing_count: note.outgoing.length,
-        orphan: isOrphan(snapshot.graph, note.path),
+        orphan: isGraphOrphan(snapshot.graph, note.path),
       }));
       const edges = snapshot.graph.edges
         .filter((edge) => selected.has(edge.source) || selected.has(edge.target))
@@ -435,7 +435,7 @@ export function createServer(): McpServer {
         stats: {
           nodes: notes.length,
           edges: edges.length,
-          orphans: notes.filter((note) => isOrphan(snapshot.graph, note.path)).length,
+          orphans: notes.filter((note) => isGraphOrphan(snapshot.graph, note.path)).length,
           unresolved: snapshot.graph.unresolved.filter((link) => selected.has(link.source)).length,
         },
         total: allItems.length,
@@ -500,23 +500,6 @@ const readOnlyAnnotations = {
   openWorldHint: true,
 } as const;
 
-const graphCacheVersion = "v2";
-
-async function loadVaultGraph(workerEnv: Env, vault: VaultConfig): Promise<{ revision: string; graph: VaultGraph }> {
-  const tree = await getMarkdownTree(workerEnv.GITHUB_VAULT_TOKEN, vault);
-  const cacheKey = new Request(`https://obsidian-vault-graph.invalid/${graphCacheVersion}/${vault.fullName}/${tree.revision}`);
-  const graphCache = await caches.open("obsidian-vault-graph");
-  const cached = await graphCache.match(cacheKey);
-  if (cached) return { revision: tree.revision, graph: await cached.json<VaultGraph>() };
-
-  const documents = await readMarkdownTree(workerEnv.GITHUB_VAULT_TOKEN, vault, tree);
-  const graph = buildVaultGraph(documents);
-  await graphCache.put(cacheKey, new Response(JSON.stringify(graph), {
-    headers: { "Cache-Control": "public, max-age=300", "Content-Type": "application/json" },
-  }));
-  return { revision: tree.revision, graph };
-}
-
 function normalizeGraphPrefix(prefix: string | undefined): string | undefined {
   if (!prefix) return undefined;
   const normalized = prefix.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
@@ -525,10 +508,6 @@ function normalizeGraphPrefix(prefix: string | undefined): string | undefined {
     throw new Error("Graph path prefix must identify a visible folder inside the vault");
   }
   return normalized;
-}
-
-function isOrphan(graph: VaultGraph, path: string): boolean {
-  return !graph.edges.some((edge) => (edge.source === path && edge.target !== path) || (edge.target === path && edge.source !== path));
 }
 
 function formatNoteLinks(

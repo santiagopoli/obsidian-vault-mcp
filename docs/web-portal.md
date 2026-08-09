@@ -37,9 +37,19 @@ Authenticated API responses use `private, no-store`. There is no CORS policy and
 | `GET /api/vaults/:repositoryId/notes` | List visible Markdown paths. |
 | `GET /api/vaults/:repositoryId/note?path=` | Read one current Markdown note. |
 | `GET /api/vaults/:repositoryId/search?q=` | Search only the selected repository. |
+| `GET /api/vaults/:repositoryId/graph` | Read the exact-revision graph metadata used by Graph Explorer. |
+| `GET /api/vaults/:repositoryId/graph/path` | Find a bounded shortest path between two exact note paths. |
 | `POST /api/vaults/:repositoryId/chat` | Run the bounded read-only agent and return citations, activity metadata, and aggregate usage. |
 
 The repository ID supplied by the browser is never sufficient authority. Each request first resolves it against the deployment's allowlist and verifies the signed-in owner. Unknown and unauthorized IDs return the same not-found result.
+
+## Graph Explorer
+
+Graph Explorer uses the same Obsidian-compatible graph snapshot as the MCP tools and vault agent. The graph is derived from wikilinks, embeds, local Markdown links, aliases, tags, and frontmatter at one immutable Git tree revision; it does not run an Obsidian process or execute vault plugins.
+
+The browser graph response contains paths, titles, tags, link counts, orphan status, and up to 10,000 resolved edges. A `truncated` flag tells the client when the full edge count exceeds that display budget. It does not contain note bodies, credentials, unresolved target text, or hidden files. Every request requires the private browser session and resolves the numeric repository ID against the server allowlist before reading GitHub. API responses remain `private, no-store`; the Worker may reuse a short-lived internal graph cache keyed by repository and immutable revision.
+
+Shortest-path queries accept outgoing links, backlinks, or both directions, with a server-enforced depth from 1 through 12. Unknown endpoints return the same graph-note-not-found result instead of revealing whether a path exists in another vault. The existing snapshot limits also apply to the portal: at most 1,000 Markdown notes, 8 MB of Markdown source, and 512 KB per note.
 
 ## Chat privacy and safety
 

@@ -219,6 +219,108 @@ describe("web API authorization", () => {
     expect(await response.json()).toEqual({ error: "vault_not_found" });
   });
 
+  it("keeps graph metadata owner-only without contacting GitHub for anonymous requests", async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const response = await WebApiHandler.request("https://vault.example/vaults/123/graph", {}, env);
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "authentication_required" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns the exact vault graph and finds deterministic shortest paths", async () => {
+    const created = await createWebSession(db, "123456", "owner");
+    const cookie = created.cookie.split(";", 1)[0] ?? "";
+    const revision = "e".repeat(40);
+    const documents = [
+      { path: "Home.md", sha: "a".repeat(40), content: "---\ntitle: Story Home\ntags: [index]\n---\n[[People/Ada]] [[Missing]]" },
+      { path: "People/Ada.md", sha: "b".repeat(40), content: "# Ada\n[[Scenes/End]]" },
+      { path: "Scenes/End.md", sha: "c".repeat(40), content: "# End" },
+      { path: "Solo.md", sha: "d".repeat(40), content: "[[Solo]]" },
+    ];
+    globalThis.fetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/repos/owner/vault")) return Response.json({ id: 123, default_branch: "main" });
+      if (url.includes("/repos/owner/vault/git/trees/main")) return Response.json({
+        sha: revision,
+        truncated: false,
+        tree: documents.map(({ path, sha, content }) => ({ path, sha, type: "blob", size: content.length })),
+      });
+      if (url === "https://api.github.com/graphql") return Response.json({
+        data: {
+          repository: Object.fromEntries(documents.map((document, index) => [`blob${index}`, {
+            oid: document.sha,
+            byteSize: document.content.length,
+            isBinary: false,
+            text: document.content,
+          }])),
+        },
+      });
+      throw new Error(`unexpected request: ${url}`);
+    }) as typeof fetch;
+
+    const graphResponse = await WebApiHandler.request("https://vault.example/vaults/123/graph", {
+      headers: { Cookie: cookie },
+    }, env);
+    expect(graphResponse.status).toBe(200);
+    expect(await graphResponse.json()).toEqual({
+      revision,
+      stats: { nodes: 4, edges: 3, orphans: 1, unresolved: 1 },
+      truncated: false,
+      nodes: [
+        { path: "Home.md", title: "Story Home", tags: ["index"], outgoing_count: 1, backlink_count: 0, orphan: false },
+        { path: "People/Ada.md", title: "Ada", tags: [], outgoing_count: 1, backlink_count: 1, orphan: false },
+        { path: "Scenes/End.md", title: "End", tags: [], outgoing_count: 0, backlink_count: 1, orphan: false },
+        { path: "Solo.md", title: "Solo", tags: [], outgoing_count: 1, backlink_count: 1, orphan: true },
+      ],
+      edges: [
+        { source: "Home.md", target: "People/Ada.md", kind: "wikilink", embedded: false },
+        { source: "People/Ada.md", target: "Scenes/End.md", kind: "wikilink", embedded: false },
+        { source: "Solo.md", target: "Solo.md", kind: "wikilink", embedded: false },
+      ],
+      unresolved_count: 1,
+    });
+
+    const pathResponse = await WebApiHandler.request(
+      "https://vault.example/vaults/123/graph/path?from=Home.md&to=Scenes%2FEnd.md&direction=outgoing&max_depth=4",
+      { headers: { Cookie: cookie } },
+      env,
+    );
+    expect(pathResponse.status).toBe(200);
+    expect(await pathResponse.json()).toEqual({
+      revision,
+      found: true,
+      path: ["Home.md", "People/Ada.md", "Scenes/End.md"],
+      distance: 2,
+      direction: "outgoing",
+      max_depth: 4,
+    });
+  });
+
+  it("validates graph path queries and hides unknown graph notes", async () => {
+    const created = await createWebSession(db, "123456", "owner");
+    const cookie = created.cookie.split(";", 1)[0] ?? "";
+    globalThis.fetch = graphFetch([{ path: "Home.md", sha: "a".repeat(40), content: "" }]);
+
+    const invalid = await WebApiHandler.request(
+      "https://vault.example/vaults/123/graph/path?from=Home.md&to=Missing.md&direction=sideways",
+      { headers: { Cookie: cookie } },
+      env,
+    );
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ error: "invalid_graph_direction" });
+
+    const missing = await WebApiHandler.request(
+      "https://vault.example/vaults/123/graph/path?from=Home.md&to=Missing.md",
+      { headers: { Cookie: cookie } },
+      env,
+    );
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: "graph_note_not_found" });
+  });
+
   it("starts Google sync only with the owner session, same-origin CSRF, and narrow Drive scope", async () => {
     const created = await createWebSession(db, "123456", "owner");
     const cookie = created.cookie.split(";", 1)[0] ?? "";
@@ -253,3 +355,26 @@ describe("web API authorization", () => {
     expect(callback.headers.get("location")).toBe("/?sync=denied&sync_vault=123");
   });
 });
+
+function graphFetch(documents: Array<{ path: string; sha: string; content: string }>): typeof fetch {
+  return vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith("/repos/owner/vault")) return Response.json({ id: 123, default_branch: "main" });
+    if (url.includes("/repos/owner/vault/git/trees/main")) return Response.json({
+      sha: "f".repeat(40),
+      truncated: false,
+      tree: documents.map(({ path, sha, content }) => ({ path, sha, type: "blob", size: content.length })),
+    });
+    if (url === "https://api.github.com/graphql") return Response.json({
+      data: {
+        repository: Object.fromEntries(documents.map((document, index) => [`blob${index}`, {
+          oid: document.sha,
+          byteSize: document.content.length,
+          isBinary: false,
+          text: document.content,
+        }])),
+      },
+    });
+    throw new Error(`unexpected request: ${url}`);
+  }) as typeof fetch;
+}

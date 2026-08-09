@@ -45,6 +45,39 @@ export interface SearchMatch {
   htmlUrl: string;
 }
 
+export interface VaultGraphNode {
+  path: string;
+  title: string;
+  tags: string[];
+  outgoing_count: number;
+  backlink_count: number;
+  orphan: boolean;
+}
+
+export interface VaultGraphEdge {
+  source: string;
+  target: string;
+  kind: string;
+  embedded: boolean;
+}
+
+export interface VaultGraph {
+  revision: string;
+  stats: { nodes: number; edges: number; orphans: number; unresolved: number };
+  nodes: VaultGraphNode[];
+  edges: VaultGraphEdge[];
+  truncated: boolean;
+}
+
+export interface VaultGraphPath {
+  revision: string;
+  found: boolean;
+  path: string[];
+  distance: number | null;
+  direction: "outgoing" | "backlinks" | "both";
+  max_depth: number;
+}
+
 export interface SyncDestination {
   id: string;
   provider: "google_drive";
@@ -84,9 +117,9 @@ export interface AgentUsage {
 export interface AgentTraceEvent {
   id: string;
   step: number;
-  tool: "list_notes" | "search_notes" | "read_notes" | "get_note_links" | "get_graph_overview";
+  tool: "list_notes" | "search_notes" | "read_notes" | "get_note_links" | "get_graph_overview" | "find_graph_path" | "get_graph_neighbors";
   status: "completed" | "failed";
-  input: { query?: string; prefix?: string; paths?: string[]; path?: string };
+  input: { query?: string; prefix?: string; paths?: string[]; path?: string; from_path?: string; to_path?: string; direction?: string };
   summary: string;
   notes: Array<{ path: string; sha: string }>;
 }
@@ -149,6 +182,24 @@ export async function searchNotes(vaultId: string, query: string): Promise<Searc
     `/api/vaults/${encodeURIComponent(vaultId)}/search?q=${encodeURIComponent(query)}&limit=20`,
   ));
   return result.matches;
+}
+
+export async function getVaultGraph(vaultId: string, signal?: AbortSignal): Promise<VaultGraph> {
+  return json(await fetch(`/api/vaults/${encodeURIComponent(vaultId)}/graph`, { signal }));
+}
+
+export async function getVaultGraphPath(
+  vaultId: string,
+  input: { from: string; to: string; direction: "outgoing" | "backlinks" | "both"; maxDepth?: number },
+  signal?: AbortSignal,
+): Promise<VaultGraphPath> {
+  const query = new URLSearchParams({
+    from: input.from,
+    to: input.to,
+    direction: input.direction,
+    max_depth: String(input.maxDepth ?? 8),
+  });
+  return json(await fetch(`/api/vaults/${encodeURIComponent(vaultId)}/graph/path?${query}`, { signal }));
 }
 
 export async function getVaultSync(vaultId: string): Promise<VaultSyncSettings> {
