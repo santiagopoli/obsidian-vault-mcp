@@ -55,11 +55,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sync-provider > button, .sync-actions button { border: 0; border-radius: 7px; padding: 8px 11px; background: var(--dark); color: white; cursor: pointer; font-size: 10px; font-weight: 600; }
 .sync-provider > button:disabled, .sync-actions button:disabled { opacity: .45; cursor: not-allowed; }
 .sync-provider > small { grid-column: 2 / -1; color: #8b5d22; font-size: 9px; }
-.sync-provider.unavailable { opacity: .72; }
-.sync-provider.unavailable > span { color: var(--muted); font: 500 9px var(--mono); text-transform: uppercase; }
 .provider-mark { display: grid; place-items: center; width: 35px; height: 35px; border-radius: 9px; font: 700 17px var(--mono); }
 .provider-mark.google { color: #4285f4; background: #edf3ff; }
-.provider-mark.apple { color: #333; background: #eee; }
 .sync-destination { display: block; }
 .sync-destination-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .sync-destination-heading > div { display: grid; gap: 3px; }
