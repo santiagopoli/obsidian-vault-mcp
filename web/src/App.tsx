@@ -586,7 +586,7 @@ export function App() {
       {syncOpen && <div className="sync-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeSyncSettings(); }}>
         <section ref={syncDialogRef} className="sync-dialog" role="dialog" aria-modal="true" aria-labelledby="sync-title" aria-describedby="sync-description">
           <div className="sync-heading"><div><span className="eyebrow">Callback destinations</span><h2 id="sync-title">Vault sync</h2></div><button ref={syncCloseRef} onClick={closeSyncSettings} aria-label="Close sync settings">×</button></div>
-          <p className="sync-intro" id="sync-description">Every canonical GitHub change queues a coalesced snapshot. Each successful run replaces the previous ZIP, including notes, attachments, and vault settings.</p>
+          <p className="sync-intro" id="sync-description">Keep an up-to-date backup of this vault in your cloud storage. New versions are saved automatically whenever the vault changes.</p>
           {syncFeedback && <div className={`sync-feedback ${syncFeedback.tone}`} role={syncFeedback.tone === "error" ? "alert" : "status"}>{syncFeedback.message}</div>}
           {!syncSettings && <div className="sync-loading">Loading destinations…</div>}
           {syncSettings?.destinations.map((destination) => {
@@ -598,9 +598,8 @@ export function App() {
               {destination.last_error && !watched && <small>{syncFailureMessage(destination.last_error)}</small>}
               <div className="sync-actions">{destination.folder_url && <a href={destination.folder_url} target="_blank" rel="noopener noreferrer">Open folder ↗</a>}{destination.status === "reauthorization_required" ? <button disabled={syncBusy} onClick={connectSync}>Reconnect</button> : <button disabled={syncBusy || watched} onClick={() => runSync(destination.id)}>{watched ? "Syncing…" : "Sync now"}</button>}<button className="danger" disabled={syncBusy} onClick={() => disconnectSync(destination.id)}>Disconnect</button></div>
             </article>})}
-          {syncSettings && syncSettings.destinations.length === 0 && <article className="sync-provider"><div className="provider-mark google">G</div><div><strong>Google Drive</strong><p>A private, visible folder containing one current vault snapshot.</p></div><button disabled={syncBusy || !syncSettings.google_drive_configured} onClick={connectSync}>{syncBusy ? "Connecting…" : "Connect"}</button>{!syncSettings.google_drive_configured && <small>The deployment owner must configure Google OAuth first.</small>}</article>}
-          <article className="sync-provider unavailable"><div className="provider-mark apple">●</div><div><strong>iCloud Drive</strong><p>Requires a local Obsidian companion because Apple does not provide server-side access to arbitrary iCloud Drive folders.</p></div><span>Not available yet</span></article>
-          <p className="sync-security">Google access is limited to files created by this app. Tokens are encrypted per owner and vault; disconnecting deletes the server credential but preserves your remote copy.</p>
+          {syncSettings && syncSettings.destinations.length === 0 && <article className="sync-provider"><div className="provider-mark google">G</div><div><strong>Google Drive</strong><p>Automatically keep a current backup of this vault in your Google Drive.</p></div><button disabled={syncBusy || !syncSettings.google_drive_configured} onClick={connectSync}>{syncBusy ? "Connecting…" : "Connect"}</button>{!syncSettings.google_drive_configured && <small>Google Drive backups are not available right now.</small>}</article>}
+          <p className="sync-security">Only you can connect or disconnect your storage. Disconnecting stops future backups but keeps the files already saved in Google Drive.</p>
         </section>
       </div>}
     </div>
