@@ -98,6 +98,14 @@ export function GraphExplorer({ vaultId, onClose, onOpenNote, onAskAboutNote }: 
   })), [trail]);
   const viewBox = `${viewport.x} ${viewport.y} ${viewport.width} ${viewport.height}`;
   const zoomPercent = Math.round((layout.width / viewport.width) * 100);
+  const labelledPaths = useMemo(() => {
+    if (visibleNodes.length <= 24) return new Set(visibleNodes.map(({ path }) => path));
+    const limit = zoomPercent >= 160 ? 24 : zoomPercent >= 100 ? 12 : 6;
+    return new Set([...visibleNodes]
+      .sort((left, right) => graphDegree(right) - graphDegree(left) || left.path.localeCompare(right.path))
+      .slice(0, limit)
+      .map(({ path }) => path));
+  }, [visibleNodes, zoomPercent]);
 
   useEffect(() => {
     const cached = graph && graphLayoutCache.get(vaultId)?.revision === graph.revision ? graphLayoutCache.get(vaultId) : undefined;
@@ -107,9 +115,7 @@ export function GraphExplorer({ vaultId, onClose, onOpenNote, onAskAboutNote }: 
       const saved = cached?.positions.get(node.path);
       return saved ? { ...node, ...saved } : node;
     });
-    const next = cached
-      ? seeded
-      : settleGraphLayout(seeded, visibleEdges, pinned, 36, baseLayout.width, baseLayout.height);
+    const next = seeded;
     setPositionedNodes(next);
     if (graph) rememberLayout(next, pinned, graph.revision);
   }, [baseLayout, graph, vaultId, visibleEdges]);
@@ -263,7 +269,7 @@ export function GraphExplorer({ vaultId, onClose, onOpenNote, onAskAboutNote }: 
   function resetLayout() {
     pinnedPositionsRef.current = new Map();
     graphLayoutCache.delete(vaultId);
-    const next = settleGraphLayout(baseLayout.nodes, visibleEdges, new Map(), 36, layout.width, layout.height);
+    const next = baseLayout.nodes.map((node) => ({ ...node }));
     setPositionedNodes(next);
     if (graph) rememberLayout(next, new Map(), graph.revision);
     fitGraph();
@@ -310,10 +316,11 @@ export function GraphExplorer({ vaultId, onClose, onOpenNote, onAskAboutNote }: 
                 if (!node) return null;
                 const active = selectedPath === node.path;
                 const onTrail = trailNodes.has(node.path);
-                const showLabel = active || onTrail || graphDegree(node) >= 4 || visibleNodes.length <= 30;
-                return <g key={node.path} className={`graph-node${active ? " selected" : ""}${onTrail ? " trail" : ""}${node.orphan ? " orphan" : ""}${draggingNode === node.path ? " dragging" : ""}`} onPointerDown={(event) => startNodeDrag(event, position)} onClick={() => { if (!dragMovedRef.current) selectNode(node); }} onDoubleClick={() => { if (!dragMovedRef.current) onOpenNote(node.path); }}>
+                const labelled = labelledPaths.has(node.path);
+                return <g key={node.path} className={`graph-node${active ? " selected" : ""}${onTrail ? " trail" : ""}${node.orphan ? " orphan" : ""}${labelled ? " labelled" : ""}${draggingNode === node.path ? " dragging" : ""}`} onPointerDown={(event) => startNodeDrag(event, position)} onClick={() => { if (!dragMovedRef.current) selectNode(node); }} onDoubleClick={() => { if (!dragMovedRef.current) onOpenNote(node.path); }}>
+                  <title>{node.title}</title>
                   <circle cx={position.x} cy={position.y} r={position.radius} />
-                  {showLabel && <text x={position.x + position.radius + 5} y={position.y + 3}>{node.title.slice(0, 34)}</text>}
+                  <text x={position.x + position.radius + 5} y={position.y + 3}>{node.title.slice(0, 34)}</text>
                 </g>;
               })}</g>
             </svg>}

@@ -32,18 +32,21 @@ export function layoutGraph(nodes: GraphLayoutInput[], width = 1_000, height = 7
   const ordered = [...nodes].sort((left, right) => right.degree - left.degree || left.path.localeCompare(right.path));
   const centerX = width / 2;
   const centerY = height / 2;
-  const usableRadius = Math.min(width, height) * 0.42;
+  const usableRadiusX = width * 0.46;
+  const usableRadiusY = height * 0.43;
   const folderOffsets = folderAngleOffsets(ordered);
   const positioned = ordered.map((node, index): PositionedGraphNode => {
     if (index === 0) return { ...node, x: centerX, y: centerY, radius: nodeRadius(node) };
     const progress = ordered.length <= 2 ? 0.5 : Math.sqrt(index / (ordered.length - 1));
-    const radius = 34 + progress * (usableRadius - 34);
+    const radiusX = 34 + progress * (usableRadiusX - 34);
+    const radiusY = 34 + progress * (usableRadiusY - 34);
     const angle = index * goldenAngle + (folderOffsets.get(topFolder(node.path)) ?? 0);
+    const radius = nodeRadius(node);
     return {
       ...node,
-      x: centerX + Math.cos(angle) * radius,
-      y: centerY + Math.sin(angle) * radius * 0.78,
-      radius: nodeRadius(node),
+      x: clamp(centerX + Math.cos(angle) * radiusX, radius, width - radius),
+      y: clamp(centerY + Math.sin(angle) * radiusY, radius, height - radius),
+      radius,
     };
   });
   return { width, height, nodes: positioned };
@@ -58,6 +61,7 @@ export function settleGraphLayout(
   height = 700,
 ): PositionedGraphNode[] {
   const positioned = nodes.map((node) => ({ ...node }));
+  const anchors = nodes.map(({ x, y }) => ({ x, y }));
   const indexByPath = new Map(positioned.map((node, index) => [node.path, index]));
   const indexedEdges = edges.flatMap(({ source, target }) => {
     const sourceIndex = indexByPath.get(source);
@@ -74,8 +78,9 @@ export function settleGraphLayout(
     const grid = new Map<string, number[]>();
 
     positioned.forEach((node, index) => {
-      forceX[index] = (width / 2 - node.x) * .0015;
-      forceY[index] = (height / 2 - node.y) * .0015;
+      const anchor = anchors[index];
+      forceX[index] = ((anchor?.x ?? node.x) - node.x) * .04;
+      forceY[index] = ((anchor?.y ?? node.y) - node.y) * .04;
       const key = `${Math.floor(node.x / cellSize)}:${Math.floor(node.y / cellSize)}`;
       const bucket = grid.get(key);
       if (bucket) bucket.push(index);
@@ -150,8 +155,8 @@ export function graphDegree(node: { outgoing_count: number; backlink_count: numb
 }
 
 function nodeRadius(node: GraphLayoutInput): number {
-  if (node.orphan) return 5;
-  return Math.min(18, 6 + Math.sqrt(node.degree) * 2.2);
+  if (node.orphan) return 4;
+  return Math.min(13, 4.5 + Math.sqrt(node.degree) * 1.45);
 }
 
 function folderAngleOffsets(nodes: GraphLayoutInput[]): Map<string, number> {

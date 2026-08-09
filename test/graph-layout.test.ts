@@ -33,15 +33,15 @@ describe("graph explorer layout", () => {
       expect(node.x).toBeLessThanOrEqual(graph.width - node.radius);
       expect(node.y).toBeGreaterThanOrEqual(node.radius);
       expect(node.y).toBeLessThanOrEqual(graph.height - node.radius);
-      if (node.orphan) expect(node.radius).toBe(5);
-      else expect(node.radius).toBeGreaterThanOrEqual(6);
+      if (node.orphan) expect(node.radius).toBe(4);
+      else expect(node.radius).toBeGreaterThanOrEqual(4.5);
     }
   });
 
   it("handles empty and singleton vaults without invalid coordinates", () => {
     expect(layoutGraph([])).toEqual({ width: 1_000, height: 700, nodes: [] });
     expect(layoutGraph([{ path: "Only.md", degree: 0, orphan: true }]).nodes).toEqual([
-      { path: "Only.md", degree: 0, orphan: true, x: 500, y: 350, radius: 5 },
+      { path: "Only.md", degree: 0, orphan: true, x: 500, y: 350, radius: 4 },
     ]);
   });
 
@@ -60,6 +60,22 @@ describe("graph explorer layout", () => {
     expect(settled[1]?.x).toBeLessThan(900);
     expect(settled[1]?.y).toBeLessThan(600);
     expect(nodes[0]).toMatchObject({ x: 100, y: 100 });
+  });
+
+  it("keeps a connected vault spread across the canvas after its initial settling", () => {
+    const inputs = Array.from({ length: 30 }, (_, index): GraphLayoutInput => ({
+      path: `Notes/Note ${index}.md`,
+      degree: index === 0 ? 29 : 1,
+      orphan: false,
+    }));
+    const edges = inputs.slice(1).map(({ path }) => ({ source: inputs[0]!.path, target: path }));
+    const initial = layoutGraph(inputs);
+    const settled = settleGraphLayout(initial.nodes, edges, new Map(), 36, initial.width, initial.height);
+    const xs = settled.map(({ x }) => x);
+    const ys = settled.map(({ y }) => y);
+
+    expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThanOrEqual(initial.width * .5);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThanOrEqual(initial.height * .5);
   });
 
   it("separates overlapping nodes without moving them outside the canvas", () => {
