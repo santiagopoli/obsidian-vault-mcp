@@ -34,7 +34,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .vault-control { justify-self: center; display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; }
 .vault-control select { border: 1px solid var(--line); background: white; color: var(--ink); border-radius: 8px; padding: 8px 34px 8px 11px; font-weight: 600; }
 .account { padding: 0 18px; justify-self: end; display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 12px; }
-.text-button { border: 0; background: transparent; padding: 7px 0; color: var(--ink); cursor: pointer; font-weight: 600; }
+.text-button { border: 0; background: transparent; padding: 7px 0; color: var(--ink); cursor: pointer; font-weight: 600; text-decoration: none; }
 
 .sync-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 20px; background: #16131b99; backdrop-filter: blur(8px); }
 .sync-dialog { width: min(600px, 100%); max-height: min(760px, calc(100vh - 40px)); overflow: auto; padding: 24px; border: 1px solid #d9d4e2; border-radius: 16px; background: var(--paper); box-shadow: 0 30px 90px #17111f55; }
@@ -158,7 +158,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .search-box button:disabled { opacity: .45; }
 .path-filter { margin: 0 18px 8px; border-bottom: 1px solid var(--line); padding: 5px 0 9px; }
 .file-list, .search-results { overflow-y: auto; padding: 3px 8px 24px; }
-.file-item { width: 100%; display: grid; grid-template-columns: 23px 1fr; align-items: center; gap: 5px; border: 0; background: transparent; color: var(--ink); text-align: left; padding: 8px 9px; border-radius: 7px; cursor: pointer; }
+.search-results { flex: 0 1 42%; max-height: 42%; border-bottom: 1px solid var(--line); }
+.file-list { flex: 1 1 auto; min-height: 110px; }
+.file-item { width: 100%; display: grid; grid-template-columns: 23px 1fr; align-items: center; gap: 5px; border: 0; background: transparent; color: var(--ink); text-align: left; text-decoration: none; padding: 8px 9px; border-radius: 7px; cursor: pointer; }
 .file-item:hover { background: #e8e5de; }
 .file-item.selected { color: #5638b5; background: #e8e1f8; }
 .file-item svg { width: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; }
@@ -176,7 +178,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .note-tree .file-item { grid-template-columns: 18px minmax(0, 1fr); padding-top: 6px; padding-bottom: 6px; }
 .section-label { padding: 5px 8px 9px; display: flex; justify-content: space-between; color: var(--muted); font: 500 9px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
 .section-label button { border: 0; background: transparent; color: var(--accent); cursor: pointer; font: inherit; }
-.result-card { width: 100%; display: block; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; padding: 12px 8px; cursor: pointer; }
+.result-card { width: 100%; display: block; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; text-decoration: none; padding: 12px 8px; cursor: pointer; }
 .result-card:hover { background: #e8e5de; }
 .result-card strong, .result-card small { display: block; }
 .result-card strong { font-size: 12px; }
@@ -253,8 +255,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .message.assistant p, .message.assistant li { font: 15px/1.55 var(--serif); }
 .message.assistant ul, .message.assistant ol { padding-left: 20px; }
 .citations { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
-.citations button { display: flex; align-items: center; gap: 5px; max-width: 100%; border: 1px solid #d8d0ee; background: white; color: #55486e; border-radius: 6px; padding: 5px 7px; cursor: pointer; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 9px; }
-.citations button span { color: var(--accent); font: 500 8px var(--mono); }
+.citations a { display: flex; align-items: center; gap: 5px; max-width: 100%; border: 1px solid #d8d0ee; background: white; color: #55486e; border-radius: 6px; padding: 5px 7px; cursor: pointer; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-decoration: none; font-size: 9px; }
+.citations a span { color: var(--accent); font: 500 8px var(--mono); }
 .context-count { display: block; margin-top: 9px; color: var(--muted); font-size: 9px; }
 .agent-activity { margin-top: 11px; border-top: 1px solid #e5dfed; padding-top: 9px; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
 .agent-activity summary { display: flex; justify-content: space-between; gap: 8px; color: #665d74; cursor: pointer; font: 600 9px/1.4 var(--mono); list-style-position: outside; }

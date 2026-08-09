@@ -32,6 +32,7 @@ import {
 import { buildNoteTree, type NoteTreeNode } from "./noteTree";
 import { markdownLinkTarget, prepareObsidianMarkdown, resolveInternalNotePath } from "./obsidianMarkdown";
 import { GraphExplorer } from "./GraphExplorer";
+import { appRouteHref, parseAppRoute, vaultIdFromHref, type AppRoute } from "./navigation";
 
 type ChatMessage = {
   id: string;
@@ -87,14 +88,16 @@ export function App() {
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<SyncFeedback>();
   const [syncWatch, setSyncWatch] = useState<SyncWatch>();
-  const [graphOpen, setGraphOpen] = useState(false);
+  const [route, setRoute] = useState<AppRoute>(() => parseAppRoute(window.location.href));
   const vaultIdRef = useRef(vaultId);
   const chatAbortRef = useRef<AbortController | undefined>(undefined);
   const graphQuestionRef = useRef<string | undefined>(undefined);
   const syncTriggerRef = useRef<HTMLButtonElement>(null);
   const syncDialogRef = useRef<HTMLElement>(null);
   const syncCloseRef = useRef<HTMLButtonElement>(null);
+  const routeRef = useRef(route);
   vaultIdRef.current = vaultId;
+  routeRef.current = route;
 
   useEffect(() => {
     void getSession()
@@ -106,7 +109,9 @@ export function App() {
         const available = await getVaults();
         setVaults(available);
         const callbackVault = new URL(window.location.href).searchParams.get("sync_vault") ?? readPendingSyncVault();
-        setVaultId(available.some(({ id }) => id === callbackVault) ? callbackVault ?? "" : available[0]?.id ?? "");
+        const routedVault = vaultIdFromHref(window.location.href);
+        const preferredVault = callbackVault ?? routedVault;
+        setVaultId(available.some(({ id }) => id === preferredVault) ? preferredVault ?? "" : available[0]?.id ?? "");
       })
       .catch((caught) => setError(messageFor(caught)))
       .finally(() => setAuthChecked(true));
@@ -118,7 +123,8 @@ export function App() {
     setNotes([]);
     setNoteTotal(0);
     setExpandedFolders(new Set());
-    setSelectedPath("");
+    const currentRoute = routeRef.current;
+    setSelectedPath(currentRoute.view === "note" ? currentRoute.path : "");
     setSelectedSha(undefined);
     setNote(undefined);
     setSearchResults(undefined);
@@ -133,6 +139,27 @@ export function App() {
       .catch((caught) => { if (!cancelled) setError(messageFor(caught)); });
     return () => { cancelled = true; };
   }, [vaultId]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const routedVault = vaultIdFromHref(window.location.href);
+      if (routedVault && vaults.some(({ id }) => id === routedVault)) setVaultId(routedVault);
+      setSelectedSha(undefined);
+      setRoute(parseAppRoute(window.location.href));
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [vaults]);
+
+  useEffect(() => {
+    if (route.view === "note") {
+      setSelectedPath(route.path);
+      setMobilePane("note");
+    } else if (route.view === "home") {
+      setSelectedSha(undefined);
+      setSelectedPath("");
+    }
+  }, [route]);
 
   useEffect(() => {
     if (!vaultId) return;
@@ -433,9 +460,25 @@ export function App() {
       setError("That linked note was not found in this vault.");
       return;
     }
-    setSelectedSha(undefined);
-    setSelectedPath(path);
+    openNote(path);
+  }
+
+  function navigate(nextRoute: AppRoute, options?: { replace?: boolean; vault?: string }) {
+    const nextVault = options?.vault ?? vaultId;
+    const href = appRouteHref(nextRoute, nextVault || undefined);
+    window.history[options?.replace ? "replaceState" : "pushState"]({ appRoute: true }, "", href);
+    setRoute(nextRoute);
+  }
+
+  function openNote(path: string, sha?: string) {
+    setSelectedSha(sha);
     setMobilePane("note");
+    navigate({ view: "note", path });
+  }
+
+  function selectVault(nextVault: string) {
+    setVaultId(nextVault);
+    navigate(route, { replace: true, vault: nextVault });
   }
 
   function toggleFolder(path: string) {
@@ -456,11 +499,11 @@ export function App() {
         <div className="brand"><Logo /><span>Obsidian Vault</span><span className="preview-pill">private preview</span></div>
         <div className="vault-control">
           <label htmlFor="vault-select">Vault</label>
-          <select id="vault-select" value={vaultId} onChange={(event) => setVaultId(event.target.value)}>
+          <select id="vault-select" value={vaultId} onChange={(event) => selectVault(event.target.value)}>
             {vaults.map((vault) => <option key={vault.id} value={vault.id}>{vault.repository}</option>)}
           </select>
         </div>
-        <div className="account"><span>@{session.user.login}</span><button className="text-button" onClick={() => setGraphOpen(true)}>Graph</button><button ref={syncTriggerRef} className="text-button" onClick={openSyncSettings}>Sync</button><button className="text-button" onClick={signOut}>Sign out</button></div>
+        <div className="account"><span>@{session.user.login}</span><a className="text-button" href={appRouteHref({ view: "graph" }, vaultId)} onClick={(event) => { if (!shouldHandleNavigation(event)) return; event.preventDefault(); navigate({ view: "graph" }); }}>Graph</a><button ref={syncTriggerRef} className="text-button" onClick={openSyncSettings}>Sync</button><button className="text-button" onClick={signOut}>Sign out</button></div>
       </header>
 
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError(undefined)} aria-label="Dismiss">×</button></div>}
@@ -478,23 +521,22 @@ export function App() {
           </div>
           <form className="search-box" onSubmit={submitSearch} role="search">
             <SearchIcon />
-            <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search contents" aria-label="Search note contents" />
+            <input value={searchQuery} onChange={(event) => { const value = event.target.value; setSearchQuery(value); if (!value.trim()) setSearchResults(undefined); }} placeholder="Search contents" aria-label="Search note contents" />
             <button aria-label="Search vault" disabled={searching || searchQuery.trim().length < 2}>{searching ? "…" : "↵"}</button>
           </form>
           {searchResults !== undefined && (
             <section className="search-results" aria-label="Search results">
               <div className="section-label" aria-live="polite"><span>{searchResults.length} matches</span><button onClick={() => { setSearchResults(undefined); setSearchQuery(""); }}>Clear</button></div>
               {searchResults.map((result) => (
-                <button className="result-card" key={result.path} onClick={() => { setSelectedSha(result.sha); setSelectedPath(result.path); setMobilePane("note"); }}>
+                <a className="result-card" key={result.path} href={appRouteHref({ view: "note", path: result.path }, vaultId)} onClick={(event) => { if (!shouldHandleNavigation(event)) return; event.preventDefault(); openNote(result.path, result.sha); }}>
                   <strong>{basename(result.path)}</strong><small>{dirname(result.path)}</small><span>{result.excerpt}</span>
-                </button>
+                </a>
               ))}
               {searchResults.length === 0 && <Empty text="No matching notes" />}
             </section>
           )}
-          {searchResults === undefined && <>
-            <div className="path-filter"><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter paths" aria-label="Filter note paths" /></div>
-            <div className="file-list note-tree" role="tree" aria-label="Markdown notes">
+          <div className="path-filter"><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter paths" aria-label="Filter note paths" /></div>
+          <div className="file-list note-tree" role="tree" aria-label="Markdown notes">
               {noteTree.map((node) => <TreeNode
                 key={node.type === "folder" ? node.path : node.note.path}
                 node={node}
@@ -503,11 +545,11 @@ export function App() {
                 forceExpanded={Boolean(filter.trim())}
                 selectedPath={selectedPath}
                 onToggle={toggleFolder}
-                onOpen={(path) => { setSelectedSha(undefined); setSelectedPath(path); setMobilePane("note"); }}
+                noteHref={(path) => appRouteHref({ view: "note", path }, vaultId)}
+                onOpen={(path) => openNote(path)}
               />)}
               {noteTree.length === 0 && <Empty text="No notes here yet" />}
-            </div>
-          </>}
+          </div>
         </nav>
 
         <main className="reader" id="document">
@@ -522,7 +564,10 @@ export function App() {
             <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={(url) => url.startsWith("vault-note:") ? url : defaultUrlTransform(url)} components={{
               a: ({ href, children }) => {
                 const internal = href ? markdownLinkTarget(href, note.path) ?? (href.startsWith("vault-note:") ? href : undefined) : undefined;
-                if (internal) return <a href="#" onClick={(event) => { event.preventDefault(); openInternalLink(internal, note.path); }}>{children}</a>;
+                if (internal) {
+                  const path = resolveInternalNotePath(internal, note.path, notes);
+                  return <a href={path ? appRouteHref({ view: "note", path }, vaultId) : "#"} onClick={(event) => { if (!shouldHandleNavigation(event)) return; event.preventDefault(); openInternalLink(internal, note.path); }}>{children}</a>;
+                }
                 if (href?.startsWith("#")) return <a href={href}>{children}</a>;
                 return <a href={safeExternalHref(href)} target="_blank" rel="noopener noreferrer">{children}</a>;
               },
@@ -563,7 +608,7 @@ export function App() {
               <span className="message-role">{message.role === "assistant" ? "Vault agent" : "You"}</span>
               {message.role === "assistant" ? <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.content}</ReactMarkdown> : <p>{message.content}</p>}
               {message.citations && message.citations.length > 0 && <div className="citations">
-                {message.citations.map((citation) => <button key={citation.id} onClick={() => { setSelectedSha(citation.sha); setSelectedPath(citation.path); setMobilePane("note"); }}><span>{citation.id}</span>{basename(citation.path)}</button>)}
+                {message.citations.map((citation) => <a key={citation.id} href={appRouteHref({ view: "note", path: citation.path }, vaultId)} onClick={(event) => { if (!shouldHandleNavigation(event)) return; event.preventDefault(); openNote(citation.path, citation.sha); }}><span>{citation.id}</span>{basename(citation.path)}</a>)}
               </div>}
               {message.noteCount !== undefined && <small className="context-count">Agent inspected {message.noteCount} note revision{message.noteCount === 1 ? "" : "s"}</small>}
               {message.role === "assistant" && message.usage && <AgentActivity
@@ -571,12 +616,12 @@ export function App() {
                 usage={message.usage}
                 model={message.model}
                 reasoningEffort={message.reasoningEffort}
-                onOpenNote={(path, sha) => { setSelectedSha(sha); setSelectedPath(path); setMobilePane("note"); }}
+                onOpenNote={openNote}
               />}
             </div>)}
             {asking && pendingActivity && <div className="message assistant pending-agent" role="status" aria-live="polite" aria-label="The vault agent is working">
               <div className="thinking"><span></span><span></span><span></span><small>{pendingActivity.phase}</small></div>
-              <AgentActivity trace={pendingActivity.trace} usage={pendingActivity.usage} model={chatModel} reasoningEffort={reasoningEffort} live onOpenNote={(path, sha) => { setSelectedSha(sha); setSelectedPath(path); setMobilePane("note"); }} />
+              <AgentActivity trace={pendingActivity.trace} usage={pendingActivity.usage} model={chatModel} reasoningEffort={reasoningEffort} live onOpenNote={openNote} />
             </div>}
           </div>
           <form className="composer" onSubmit={submitQuestion}>
@@ -587,14 +632,14 @@ export function App() {
           <p className="privacy-note">Chat is ephemeral. Answers may be wrong; verify citations.</p>
         </aside>
       </div>
-      {graphOpen && vaultId && <GraphExplorer
+      {route.view === "graph" && vaultId && <GraphExplorer
         vaultId={vaultId}
-        onClose={() => setGraphOpen(false)}
-        onOpenNote={(path) => { setSelectedSha(undefined); setSelectedPath(path); setMobilePane("note"); setGraphOpen(false); }}
+        onClose={() => navigate(selectedPath ? { view: "note", path: selectedPath } : { view: "home" })}
+        onOpenNote={(path) => openNote(path)}
         onAskAboutNote={(path) => {
           const prompt = "Explain this note and how it connects to the rest of the vault.";
           if (chatContextRef.current === `${vaultId}:note:${path}`) setQuestion(prompt); else graphQuestionRef.current = prompt;
-          setSelectedSha(undefined); setSelectedPath(path); setChatScope("note"); setMobilePane("chat"); setGraphOpen(false);
+          setSelectedSha(undefined); setSelectedPath(path); setChatScope("note"); setMobilePane("chat"); navigate({ view: "note", path });
         }}
       />}
       {syncOpen && <div className="sync-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeSyncSettings(); }}>
@@ -651,22 +696,24 @@ function SignIn({ error }: { error?: string }) {
 function LoadingScreen() { return <main className="loading-screen"><Logo /><span>Opening your vault…</span></main>; }
 function Empty({ text }: { text: string }) { return <div className="empty-list">{text}</div>; }
 function DocumentSkeleton() { return <div className="document-skeleton"><i></i><i></i><i></i><i></i><i></i></div>; }
-function TreeNode({ node, depth, expandedFolders, forceExpanded, selectedPath, onToggle, onOpen }: {
+function TreeNode({ node, depth, expandedFolders, forceExpanded, selectedPath, onToggle, noteHref, onOpen }: {
   node: NoteTreeNode;
   depth: number;
   expandedFolders: Set<string>;
   forceExpanded: boolean;
   selectedPath: string;
   onToggle: (path: string) => void;
+  noteHref: (path: string) => string;
   onOpen: (path: string) => void;
 }) {
-  if (node.type === "note") return <button
+  if (node.type === "note") return <a
     role="treeitem"
+    href={noteHref(node.note.path)}
     aria-current={selectedPath === node.note.path ? "true" : undefined}
     className={selectedPath === node.note.path ? "file-item selected" : "file-item"}
     style={{ paddingLeft: 9 + depth * 14 }}
-    onClick={() => onOpen(node.note.path)}
-  ><DocumentIcon /><span><strong>{node.name}</strong></span></button>;
+    onClick={(event) => { if (!shouldHandleNavigation(event)) return; event.preventDefault(); onOpen(node.note.path); }}
+  ><DocumentIcon /><span><strong>{node.name}</strong></span></a>;
   const expanded = forceExpanded || expandedFolders.has(node.path);
   return <div role="treeitem" aria-expanded={expanded}>
     <button className="folder-item" style={{ paddingLeft: 8 + depth * 14 }} onClick={() => onToggle(node.path)}>
@@ -680,6 +727,7 @@ function TreeNode({ node, depth, expandedFolders, forceExpanded, selectedPath, o
       forceExpanded={forceExpanded}
       selectedPath={selectedPath}
       onToggle={onToggle}
+      noteHref={noteHref}
       onOpen={onOpen}
     />)}</div>}
   </div>;
@@ -690,6 +738,7 @@ function countNotes(folder: Extract<NoteTreeNode, { type: "folder" }>): number {
 function basename(path: string) { return path.split("/").pop()?.replace(/\.md$/i, "") ?? path; }
 function dirname(path: string) { const parts = path.split("/"); parts.pop(); return parts.join(" / ") || "Vault root"; }
 function safeExternalHref(href: string | undefined) { if (!href) return undefined; return /^(https?:|mailto:)/i.test(href) ? href : undefined; }
+function shouldHandleNavigation(event: { button: number; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }) { return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey; }
 let messageSequence = 0;
 function messageId() { messageSequence += 1; return `message-${Date.now()}-${messageSequence}`; }
 function formatTokens(value: number) { return new Intl.NumberFormat(undefined, { notation: value >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value); }
