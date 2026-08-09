@@ -57,8 +57,9 @@ describe("graph explorer layout", () => {
     const settled = settleGraphLayout(nodes, [{ source: "A.md", target: "B.md" }], new Map([["A.md", { x: 240, y: 260 }]]), 20);
 
     expect(settled[0]).toMatchObject({ path: "A.md", x: 240, y: 260 });
-    expect(settled[1]?.x).toBeLessThan(900);
-    expect(settled[1]?.y).toBeLessThan(600);
+    expect(settled[1]).not.toMatchObject({ x: 900, y: 600 });
+    expect(settled[1]?.x).toBeLessThanOrEqual(992);
+    expect(settled[1]?.y).toBeLessThanOrEqual(692);
     expect(nodes[0]).toMatchObject({ x: 100, y: 100 });
   });
 
@@ -74,6 +75,31 @@ describe("graph explorer layout", () => {
     const xs = settled.map(({ x }) => x);
     const ys = settled.map(({ y }) => y);
 
+    expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThanOrEqual(initial.width * .5);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThanOrEqual(initial.height * .5);
+  });
+
+  it("does not collapse the graph across repeated drag settling events", () => {
+    const inputs = Array.from({ length: 30 }, (_, index): GraphLayoutInput => ({
+      path: `Notes/Note ${index}.md`,
+      degree: index === 0 ? 29 : 1,
+      orphan: false,
+    }));
+    const hub = inputs[0]!.path;
+    const edges = inputs.slice(1).map(({ path }) => ({ source: hub, target: path }));
+    const initial = layoutGraph(inputs);
+    let dragged = settleGraphLayout(initial.nodes, edges, new Map(), 36, initial.width, initial.height);
+    let pinned = new Map<string, { x: number; y: number }>();
+
+    for (let step = 0; step < 16; step += 1) {
+      pinned = new Map([[hub, { x: 500 + step * 5, y: 350 + step * 2 }]]);
+      dragged = settleGraphLayout(dragged, edges, pinned, 4, initial.width, initial.height);
+    }
+    dragged = settleGraphLayout(dragged, edges, pinned, 18, initial.width, initial.height);
+
+    const xs = dragged.map(({ x }) => x);
+    const ys = dragged.map(({ y }) => y);
+    expect(dragged.find(({ path }) => path === hub)).toMatchObject(pinned.get(hub)!);
     expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThanOrEqual(initial.width * .5);
     expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThanOrEqual(initial.height * .5);
   });
