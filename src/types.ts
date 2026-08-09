@@ -33,6 +33,9 @@ export interface Env {
   OPENAI_CHAT_MODEL?: string;
   WEB_CHAT_ENABLED?: "true" | "false";
   WEB_CHAT_DAILY_LIMIT?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  SYNC_CREDENTIALS_KEY?: string;
   AUTOMATIONS_YAML?: string;
   OAUTH_KV: KVNamespace;
   EVENT_DB: D1Database;

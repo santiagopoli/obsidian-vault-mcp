@@ -14,6 +14,8 @@ import {
 import { getMarkdownTree, getMarkdownTreeAtRevision, getRepositoryMetadata } from "./github";
 import type { AutomationDefinition } from "./automations/types";
 import type { Env, VaultEventQueueMessage } from "./types";
+import { listActiveSyncDestinations } from "./syncStore";
+import { enqueueSyncSnapshot } from "./vaultSync";
 
 export async function processVaultEventMessage(env: Env, message: VaultEventQueueMessage): Promise<void> {
   const vault = resolveVault(env, message.vault);
@@ -34,7 +36,7 @@ export async function processVaultEventMessage(env: Env, message: VaultEventQueu
   }
   const previous = await getMarkdownTreeAtRevision(env.GITHUB_VAULT_TOKEN, vault, previousRevision);
   const events = deriveVaultEvents(message.repositoryId, previous, current);
-  await enqueueMatchingAutomations(env, vault.fullName, message.repositoryId, events);
+  await enqueueMatchingAutomations(env, vault.fullName, message.repositoryId, current.revision, events);
   await storeVaultEvents(env.EVENT_DB, message.repositoryId, vault.fullName, current.revision, events);
   await markWebhookDeliveryProcessed(env.EVENT_DB, message.deliveryId);
   await dispatchPendingAutomationJobs(env);
@@ -76,6 +78,7 @@ async function enqueueMatchingAutomations(
   env: Env,
   vault: string,
   repositoryId: string,
+  revision: string,
   events: VaultEvent[],
 ): Promise<void> {
   const config = parseAutomationConfig(env.AUTOMATIONS_YAML ?? "version: 1\nautomations: []\n");
@@ -84,6 +87,10 @@ async function enqueueMatchingAutomations(
       if (!automationMatches(automation, vault, event)) continue;
       await enqueueAutomation(env, automation, repositoryId, vault, event);
     }
+  }
+  const syncDestinations = await listActiveSyncDestinations(env.EVENT_DB, vault);
+  for (const destination of syncDestinations) {
+    await enqueueSyncSnapshot(env, destination, revision, `sync-revision:${repositoryId}:${revision}`);
   }
 }
 

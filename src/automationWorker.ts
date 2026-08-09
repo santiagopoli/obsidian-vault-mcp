@@ -14,6 +14,8 @@ import { resolveVault } from "./config";
 import { GitHubError, readMarkdownBlobAtSha, readMarkdownFile, writeMarkdownFile } from "./github";
 import type { SummarizeNoteAutomationTarget } from "./automations/types";
 import type { AutomationJobQueueMessage, Env } from "./types";
+import { GoogleDriveError } from "./googleDrive";
+import { syncVaultToGoogleDrive } from "./vaultSync";
 
 const leaseDurationMs = 5 * 60_000;
 const maxAttempts = 6;
@@ -49,6 +51,12 @@ export async function processAutomationJobMessage(env: Env, message: AutomationJ
 }
 
 async function executeAutomation(env: Env, job: AutomationJobRecord, leaseToken: string): Promise<void> {
+  if (job.handler === "sync-google-drive") {
+    await assertAutomationJobCanWrite(env.EVENT_DB, job.runId, leaseToken);
+    await syncVaultToGoogleDrive(env, job, leaseToken);
+    await assertAutomationJobCanWrite(env.EVENT_DB, job.runId, leaseToken);
+    return;
+  }
   const automation = parseAutomationConfig(env.AUTOMATIONS_YAML ?? "version: 1\nautomations: []\n")
     .automations.find((candidate) => candidate.id === job.automationId && candidate.enabled);
   if (!automation || await automationConfigHash(automation) !== job.configHash || automation.target.handler !== job.handler) {
@@ -146,6 +154,7 @@ async function finish(
 }
 
 function isRetryable(error: unknown): boolean {
+  if (error instanceof GoogleDriveError) return error.retryable;
   if (error instanceof AutomationProviderError) return error.retryable;
   if (error instanceof GitHubError) return error.status === 429 || error.status >= 500;
   return error instanceof TypeError;
@@ -161,6 +170,7 @@ function isConflict(error: unknown): boolean {
 }
 
 function errorCode(error: unknown): string {
+  if (error instanceof GoogleDriveError) return error.code;
   if (error instanceof AutomationProviderError) return error.code;
   if (error instanceof GitHubError) return `github_${error.status}`;
   if (error instanceof Error) return error.message.slice(0, 200);

@@ -18,6 +18,7 @@
     "OPENAI_CHAT_MODEL": "gpt-5.6-sol",
     "WEB_CHAT_ENABLED": "false",
     "WEB_CHAT_DAILY_LIMIT": "50",
+    "GOOGLE_CLIENT_ID": "",
     "AUTOMATIONS_YAML": "version: 1\nautomations: []\n"
   },
   "assets": {

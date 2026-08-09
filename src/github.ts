@@ -101,6 +101,24 @@ export async function getRepositoryMetadata(token: string, vault: VaultConfig, s
   return { id: String(repository.id), defaultBranch: repository.default_branch };
 }
 
+export async function fetchVaultArchive(
+  token: string,
+  vault: VaultConfig,
+  revision: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  if (!/^[0-9a-f]{40}$/i.test(revision)) throw new Error("Vault archive revision must be a 40-character Git object ID");
+  const response = await fetch(
+    `${githubApi}/repos/${vault.owner}/${vault.repo}/zipball/${revision}`,
+    { headers: headers(token, "application/vnd.github+json"), redirect: "follow", signal },
+  );
+  if (!response.ok || !response.body) {
+    const requestId = response.headers.get("x-github-request-id");
+    throw new GitHubError(`GitHub archive request failed (${response.status})${requestId ? `, request ${requestId}` : ""}`, response.status);
+  }
+  return response;
+}
+
 export async function getMarkdownTreeAtRevision(
   token: string,
   vault: VaultConfig,

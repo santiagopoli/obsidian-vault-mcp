@@ -12,6 +12,10 @@ import {
   getVaults,
   logout,
   searchNotes,
+  getVaultSync,
+  connectGoogleDrive,
+  runVaultSync,
+  disconnectVaultSync,
   type Note,
   type NoteSummary,
   type AgentTraceEvent,
@@ -21,7 +25,9 @@ import {
   type ReasoningEffort,
   type SearchMatch,
   type Session,
+  type SyncDestination,
   type Vault,
+  type VaultSyncSettings,
 } from "./api";
 import { buildNoteTree, type NoteTreeNode } from "./noteTree";
 import { markdownLinkTarget, prepareObsidianMarkdown, resolveInternalNotePath } from "./obsidianMarkdown";
@@ -40,6 +46,15 @@ type ChatMessage = {
 };
 
 type PendingActivity = { phase: string; trace: AgentTraceEvent[]; usage: AgentUsage };
+type SyncFeedback = { tone: "success" | "error" | "info"; message: string };
+type SyncWatch = {
+  vaultId: string;
+  kind: "initial" | "manual";
+  startedAt: number;
+  destinationId?: string;
+  revision?: string;
+  baselineUpdatedAt?: number;
+};
 
 export function App() {
   const [session, setSession] = useState<Session>();
@@ -66,8 +81,16 @@ export function App() {
   const [pendingActivity, setPendingActivity] = useState<PendingActivity>();
   const [error, setError] = useState<string>();
   const [mobilePane, setMobilePane] = useState<"files" | "note" | "chat">("files");
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [syncSettings, setSyncSettings] = useState<VaultSyncSettings>();
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState<SyncFeedback>();
+  const [syncWatch, setSyncWatch] = useState<SyncWatch>();
   const vaultIdRef = useRef(vaultId);
   const chatAbortRef = useRef<AbortController | undefined>(undefined);
+  const syncTriggerRef = useRef<HTMLButtonElement>(null);
+  const syncDialogRef = useRef<HTMLElement>(null);
+  const syncCloseRef = useRef<HTMLButtonElement>(null);
   vaultIdRef.current = vaultId;
 
   useEffect(() => {
@@ -79,7 +102,8 @@ export function App() {
         setReasoningEffort(current.chat.default_reasoning_effort);
         const available = await getVaults();
         setVaults(available);
-        setVaultId(available[0]?.id ?? "");
+        const callbackVault = new URL(window.location.href).searchParams.get("sync_vault") ?? readPendingSyncVault();
+        setVaultId(available.some(({ id }) => id === callbackVault) ? callbackVault ?? "" : available[0]?.id ?? "");
       })
       .catch((caught) => setError(messageFor(caught)))
       .finally(() => setAuthChecked(true));
@@ -106,6 +130,107 @@ export function App() {
       .catch((caught) => { if (!cancelled) setError(messageFor(caught)); });
     return () => { cancelled = true; };
   }, [vaultId]);
+
+  useEffect(() => {
+    if (!vaultId) return;
+    const url = new URL(window.location.href);
+    const result = url.searchParams.get("sync");
+    if (!result) return;
+    const callbackVault = url.searchParams.get("sync_vault") ?? readPendingSyncVault();
+    if (callbackVault && callbackVault !== vaultId && vaults.some(({ id }) => id === callbackVault)) {
+      setVaultId(callbackVault);
+      return;
+    }
+    url.searchParams.delete("sync");
+    url.searchParams.delete("sync_vault");
+    window.history.replaceState({}, "", url);
+    clearPendingSyncVault();
+    setSyncFeedback(result === "connected"
+      ? { tone: "success", message: "Google Drive connected. The initial vault snapshot is syncing now." }
+      : { tone: "error", message: syncCallbackMessage(result) });
+    setSyncOpen(true);
+    setSyncSettings(undefined);
+    if (result === "connected") setSyncWatch({ vaultId, kind: "initial", startedAt: Date.now() });
+    void getVaultSync(vaultId).then(setSyncSettings).catch((caught) => setSyncFeedback({ tone: "error", message: messageFor(caught) }));
+  }, [vaultId, vaults]);
+
+  useEffect(() => {
+    if (!syncOpen) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    const dialog = syncDialogRef.current;
+    syncCloseRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSyncOpen(false);
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+      const focusable = [...dialog.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])")];
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      const restoreTarget = previousFocus && document.contains(previousFocus) ? previousFocus : syncTriggerRef.current;
+      restoreTarget?.focus();
+    };
+  }, [syncOpen]);
+
+  useEffect(() => {
+    if (!syncOpen || !syncWatch || syncWatch.vaultId !== vaultId) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const settings = await getVaultSync(syncWatch.vaultId);
+        if (cancelled) return;
+        setSyncSettings(settings);
+        const destination = syncWatch.destinationId
+          ? settings.destinations.find(({ id }) => id === syncWatch.destinationId)
+          : settings.destinations.find(({ provider }) => provider === "google_drive");
+        if (!destination) return;
+        if (destination.status === "reauthorization_required") {
+          setSyncFeedback({ tone: "error", message: "Google authorization expired. Reconnect this destination." });
+          setSyncWatch(undefined);
+          return;
+        }
+        if (destination.last_error && (syncWatch.baselineUpdatedAt === undefined || destination.updated_at > syncWatch.baselineUpdatedAt)) {
+          setSyncFeedback({ tone: "error", message: syncFailureMessage(destination.last_error) });
+          setSyncWatch(undefined);
+          return;
+        }
+        const complete = syncWatch.revision
+          ? destination.last_synced_revision === syncWatch.revision
+          : Boolean(destination.last_synced_at);
+        if (complete) {
+          setSyncFeedback({ tone: "success", message: syncWatch.kind === "initial" ? "Initial snapshot synced to Google Drive." : "Vault snapshot is up to date in Google Drive." });
+          setSyncWatch(undefined);
+          return;
+        }
+        if (Date.now() - syncWatch.startedAt > 5 * 60_000) {
+          setSyncFeedback({ tone: "info", message: "The snapshot is still processing in the background. Reopen Sync to check its latest status." });
+          setSyncWatch(undefined);
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setSyncFeedback({ tone: "error", message: messageFor(caught) });
+          setSyncWatch(undefined);
+        }
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 2_000);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [syncOpen, syncWatch, vaultId]);
 
   useEffect(() => {
     if (!vaultId || !selectedPath) return;
@@ -245,6 +370,59 @@ export function App() {
     location.assign("/");
   }
 
+  async function openSyncSettings() {
+    if (!vaultId) return;
+    setSyncOpen(true);
+    setSyncSettings(undefined);
+    setSyncFeedback(syncWatch?.vaultId === vaultId ? { tone: "info", message: "Vault snapshot is syncing in the background." } : undefined);
+    try { setSyncSettings(await getVaultSync(vaultId)); } catch (caught) { setSyncFeedback({ tone: "error", message: messageFor(caught) }); }
+  }
+
+  async function connectSync() {
+    if (!session || !vaultId) return;
+    setSyncBusy(true);
+    setSyncFeedback({ tone: "info", message: "Opening Google authorization…" });
+    writePendingSyncVault(vaultId);
+    try { window.location.assign(await connectGoogleDrive(vaultId, session.csrf_token)); } catch (caught) {
+      clearPendingSyncVault();
+      setSyncFeedback({ tone: "error", message: messageFor(caught) });
+      setSyncBusy(false);
+    }
+  }
+
+  async function runSync(destinationId: string) {
+    if (!session || !vaultId) return;
+    setSyncBusy(true);
+    setSyncFeedback({ tone: "info", message: "Queueing the latest vault snapshot…" });
+    try {
+      const { revision } = await runVaultSync(vaultId, destinationId, session.csrf_token);
+      setSyncWatch({
+        vaultId,
+        destinationId,
+        revision,
+        kind: "manual",
+        startedAt: Date.now(),
+        baselineUpdatedAt: syncSettings?.destinations.find(({ id }) => id === destinationId)?.updated_at,
+      });
+      setSyncFeedback({ tone: "info", message: "Snapshot queued. Waiting for Google Drive…" });
+      setSyncSettings(await getVaultSync(vaultId));
+    } catch (caught) { setSyncFeedback({ tone: "error", message: messageFor(caught) }); } finally { setSyncBusy(false); }
+  }
+
+  async function disconnectSync(destinationId: string) {
+    if (!session || !vaultId || !confirm("Disconnect this destination? The existing copy in Google Drive will be preserved.")) return;
+    setSyncBusy(true);
+    setSyncFeedback(undefined);
+    try {
+      await disconnectVaultSync(vaultId, destinationId, session.csrf_token);
+      if (syncWatch?.destinationId === destinationId || syncWatch?.vaultId === vaultId) setSyncWatch(undefined);
+      setSyncSettings(await getVaultSync(vaultId));
+      setSyncFeedback({ tone: "success", message: "Google Drive disconnected. The existing remote copy was preserved." });
+    } catch (caught) { setSyncFeedback({ tone: "error", message: messageFor(caught) }); } finally { setSyncBusy(false); }
+  }
+
+  function closeSyncSettings() { setSyncOpen(false); }
+
   function openInternalLink(href: string, currentPath: string) {
     const path = resolveInternalNotePath(href, currentPath, notes);
     if (!path) {
@@ -278,7 +456,7 @@ export function App() {
             {vaults.map((vault) => <option key={vault.id} value={vault.id}>{vault.repository}</option>)}
           </select>
         </div>
-        <div className="account"><span>@{session.user.login}</span><button className="text-button" onClick={signOut}>Sign out</button></div>
+        <div className="account"><span>@{session.user.login}</span><button ref={syncTriggerRef} className="text-button" onClick={openSyncSettings}>Sync</button><button className="text-button" onClick={signOut}>Sign out</button></div>
       </header>
 
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError(undefined)} aria-label="Dismiss">×</button></div>}
@@ -405,6 +583,26 @@ export function App() {
           <p className="privacy-note">Chat is ephemeral. Answers may be wrong; verify citations.</p>
         </aside>
       </div>
+      {syncOpen && <div className="sync-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeSyncSettings(); }}>
+        <section ref={syncDialogRef} className="sync-dialog" role="dialog" aria-modal="true" aria-labelledby="sync-title" aria-describedby="sync-description">
+          <div className="sync-heading"><div><span className="eyebrow">Callback destinations</span><h2 id="sync-title">Vault sync</h2></div><button ref={syncCloseRef} onClick={closeSyncSettings} aria-label="Close sync settings">×</button></div>
+          <p className="sync-intro" id="sync-description">Every canonical GitHub change queues a coalesced snapshot. Each successful run replaces the previous ZIP, including notes, attachments, and vault settings.</p>
+          {syncFeedback && <div className={`sync-feedback ${syncFeedback.tone}`} role={syncFeedback.tone === "error" ? "alert" : "status"}>{syncFeedback.message}</div>}
+          {!syncSettings && <div className="sync-loading">Loading destinations…</div>}
+          {syncSettings?.destinations.map((destination) => {
+            const watched = syncWatch?.vaultId === vaultId && (!syncWatch.destinationId || syncWatch.destinationId === destination.id);
+            const health = syncHealth(destination, watched);
+            return <article className="sync-destination" key={destination.id}>
+              <div className="sync-destination-heading"><div><strong>Google Drive</strong><span className={`sync-connection ${destination.status}`}>{syncConnection(destination.status)}</span></div><span className={`sync-status ${health.tone}`}>{health.label}</span></div>
+              <p>{watched ? "Publishing the latest snapshot…" : destination.last_synced_at ? `Last synced ${new Date(destination.last_synced_at * 1000).toLocaleString()}` : "Waiting for the initial snapshot"}</p>
+              {destination.last_error && !watched && <small>{syncFailureMessage(destination.last_error)}</small>}
+              <div className="sync-actions">{destination.folder_url && <a href={destination.folder_url} target="_blank" rel="noopener noreferrer">Open folder ↗</a>}{destination.status === "reauthorization_required" ? <button disabled={syncBusy} onClick={connectSync}>Reconnect</button> : <button disabled={syncBusy || watched} onClick={() => runSync(destination.id)}>{watched ? "Syncing…" : "Sync now"}</button>}<button className="danger" disabled={syncBusy} onClick={() => disconnectSync(destination.id)}>Disconnect</button></div>
+            </article>})}
+          {syncSettings && syncSettings.destinations.length === 0 && <article className="sync-provider"><div className="provider-mark google">G</div><div><strong>Google Drive</strong><p>A private, visible folder containing one current vault snapshot.</p></div><button disabled={syncBusy || !syncSettings.google_drive_configured} onClick={connectSync}>{syncBusy ? "Connecting…" : "Connect"}</button>{!syncSettings.google_drive_configured && <small>The deployment owner must configure Google OAuth first.</small>}</article>}
+          <article className="sync-provider unavailable"><div className="provider-mark apple">●</div><div><strong>iCloud Drive</strong><p>Requires a local Obsidian companion because Apple does not provide server-side access to arbitrary iCloud Drive folders.</p></div><span>Not available yet</span></article>
+          <p className="sync-security">Google access is limited to files created by this app. Tokens are encrypted per owner and vault; disconnecting deletes the server credential but preserves your remote copy.</p>
+        </section>
+      </div>}
     </div>
   );
 }
@@ -540,8 +738,56 @@ function messageFor(error: unknown) {
     model_refused: "The model could not answer that request.",
     authentication_required: "Your session expired. Sign in again.",
     vault_not_found: "This vault is no longer available.",
+    google_drive_sync_not_configured: "Google Drive sync is not configured on this deployment.",
+    sync_destination_not_found: "That sync destination is no longer connected.",
   };
   return messages[error.code] ?? "The request could not be completed.";
+}
+
+function syncConnection(status: SyncDestination["status"]) {
+  if (status === "reauthorization_required") return "Reconnect required";
+  if (status === "disabled") return "Disconnected";
+  return "Connected";
+}
+
+function syncHealth(destination: SyncDestination, watched: boolean): { label: string; tone: "success" | "error" | "warning" | "pending" } {
+  if (destination.status === "reauthorization_required") return { label: "Needs attention", tone: "warning" };
+  if (watched) return { label: "Syncing", tone: "pending" };
+  if (destination.last_error) return { label: "Last run failed", tone: "error" };
+  if (destination.last_synced_at) return { label: "Last run succeeded", tone: "success" };
+  return { label: "Pending", tone: "pending" };
+}
+
+function syncCallbackMessage(result: string): string {
+  const messages: Record<string, string> = {
+    denied: "Google Drive access was not granted.",
+    invalid_state: "The sync authorization expired or was already used. Try connecting again.",
+    configuration_error: "Google Drive sync is incomplete on this deployment.",
+    connection_failed: "Google Drive could not be connected. Try again.",
+  };
+  return messages[result] ?? "The sync connection could not be completed.";
+}
+
+function syncFailureMessage(code: string): string {
+  if (code === "google_reauthorization_required") return "Google authorization expired. Reconnect this destination.";
+  if (code === "sync_credential_invalid") return "The stored credential cannot be decrypted. Reconnect this destination.";
+  if (code === "sync_network_failed") return "The provider could not be reached. A retry will be scheduled.";
+  if (code === "google_drive_upload_failed" || code === "google_drive_create_failed") return "Google Drive rejected the snapshot. Try again or reconnect.";
+  if (code === "google_drive_parent_missing") return "The Drive folder was removed. The next run will recreate it.";
+  if (code === "github_401" || code === "github_403") return "GitHub access expired. The deployment owner must rotate its repository token.";
+  if (code.startsWith("github_") || code === "sync_failed") return "The snapshot could not be created. Check the Worker logs and retry.";
+  return "The last sync did not complete. Try again.";
+}
+
+const pendingSyncVaultKey = "obsidian-vault-sync-repository";
+function readPendingSyncVault(): string | undefined {
+  try { return window.sessionStorage.getItem(pendingSyncVaultKey) ?? undefined; } catch { return undefined; }
+}
+function writePendingSyncVault(vaultId: string): void {
+  try { window.sessionStorage.setItem(pendingSyncVaultKey, vaultId); } catch {}
+}
+function clearPendingSyncVault(): void {
+  try { window.sessionStorage.removeItem(pendingSyncVaultKey); } catch {}
 }
 
 function Logo() { return <svg className="logo" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 27 9l-3 17-8 4-8-4L5 9 16 2Z"/><path d="m5 9 11 8 11-8M16 17v13M8 26l8-9 8 9"/></svg>; }

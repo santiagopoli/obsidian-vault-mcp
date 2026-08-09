@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Miniflare } from "miniflare";
 import eventRuntimeMigration from "../migrations/0001_event_runtime.sql?raw";
 import automationJobsMigration from "../migrations/0002_automation_jobs.sql?raw";
+import vaultSyncMigration from "../migrations/0005_vault_sync.sql?raw";
 import { processVaultEventMessage } from "../src/eventQueue";
 import type { AutomationJobQueueMessage, Env } from "../src/types";
 
@@ -26,6 +27,7 @@ describe("vault event queue", () => {
     db = await runtime.getD1Database("EVENT_DB");
     await applyMigration(db, eventRuntimeMigration);
     await applyMigration(db, automationJobsMigration);
+    await applyMigration(db, vaultSyncMigration);
     await db.prepare(`
       INSERT INTO vault_states (repository_id, vault, revision, updated_at)
       VALUES ('42', 'owner/vault', ?, '2026-08-07T00:00:00.000Z')
@@ -93,6 +95,40 @@ describe("vault event queue", () => {
       afterRevision: revisionC,
     });
     expect((await db.prepare("SELECT COUNT(*) AS count FROM automation_jobs").first<{ count: number }>())?.count).toBe(1);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("queues a full-vault sync when only attachments or hidden vault settings changed", async () => {
+    await db.prepare(`INSERT INTO vault_sync_destinations (
+      destination_id, github_user_id, repository_id, vault, provider, encrypted_refresh_token, status, created_at, updated_at
+    ) VALUES ('11111111-1111-4111-8111-111111111111', '123', '42', 'owner/vault', 'google_drive', 'encrypted', 'active', 1, 1)`).run();
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/repos/owner/vault")) return Response.json({ id: 42, default_branch: "main" });
+      if (url.includes(`/git/trees/${revisionA}`)) return Response.json({ sha: revisionA, truncated: false, tree: [
+        { path: "Story.md", type: "blob", sha: storyBeforeSha, size: 10 },
+      ] });
+      if (url.includes("/git/trees/main")) return Response.json({ sha: revisionC, truncated: false, tree: [
+        { path: "Story.md", type: "blob", sha: storyBeforeSha, size: 10 },
+        { path: "images/map.png", type: "blob", sha: "9".repeat(40), size: 20 },
+      ] });
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+    const sent: AutomationJobQueueMessage[] = [];
+
+    await processVaultEventMessage(environment(db, sent), {
+      kind: "vault-event",
+      deliveryId: "attachment-change",
+      repositoryId: "42",
+      vault: "owner/vault",
+      previousRevision: revisionA,
+      afterRevision: revisionC,
+    });
+
+    expect(await db.prepare("SELECT automation_id AS automationId, source_revision AS revision FROM automation_jobs").first()).toEqual({
+      automationId: "sync-google:11111111-1111-4111-8111-111111111111",
+      revision: revisionC,
+    });
     expect(sent).toHaveLength(1);
   });
 });

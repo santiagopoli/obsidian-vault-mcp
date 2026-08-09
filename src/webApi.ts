@@ -13,6 +13,17 @@ import { hashedSafetyIdentifier, runVaultAgent, VaultAgentProviderError, type Ag
 import { VaultAgentToolbox } from "./vaultAgentTools";
 import { clearWebSessionCookie, readWebSession, revokeWebSession, secureEquals, type WebSession } from "./webSession";
 import type { Env, VaultConfig } from "./types";
+import { encryptCredential } from "./credentialCipher";
+import { exchangeGoogleCode, googleAuthorizationUrl } from "./googleDrive";
+import {
+  consumeSyncOAuthState,
+  createSyncOAuthState,
+  deleteSyncDestination,
+  listSyncDestinations,
+  saveGoogleDriveDestination,
+} from "./syncStore";
+import { credentialContext, enqueueSyncSnapshot } from "./vaultSync";
+import { dispatchPendingAutomationJobs } from "./eventQueue";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -122,6 +133,103 @@ app.get("/vaults/:vaultId/search", async (context) => {
   const offset = boundedInteger(context.req.query("offset"), 0, 0, 900);
   const result = await searchMarkdownFiles(context.env.GITHUB_VAULT_TOKEN, vault, query, prefix, limit, offset);
   return context.json({ ...result, count: result.matches.length, offset });
+});
+
+app.get("/vaults/:vaultId/sync", async (context) => {
+  const session = await requireAuthorizedSession(context.env, context.req.header("Cookie"));
+  const vault = await resolveAuthorizedVault(context.env, context.req.param("vaultId"));
+  const destinations = await listSyncDestinations(context.env.EVENT_DB, session.githubUserId, context.req.param("vaultId"));
+  return context.json({
+    vault: vault.fullName,
+    google_drive_configured: Boolean(context.env.GOOGLE_CLIENT_ID && context.env.GOOGLE_CLIENT_SECRET && context.env.SYNC_CREDENTIALS_KEY),
+    destinations: destinations.map((destination) => ({
+      id: destination.destinationId,
+      provider: destination.provider,
+      status: destination.status,
+      last_synced_revision: destination.lastSyncedRevision,
+      last_synced_at: destination.lastSyncedAt,
+      last_error: destination.lastErrorCode,
+      folder_url: destination.rootFolderId ? `https://drive.google.com/drive/folders/${encodeURIComponent(destination.rootFolderId)}` : undefined,
+      updated_at: destination.updatedAt,
+    })),
+  });
+});
+
+app.post("/vaults/:vaultId/sync/google/start", async (context) => {
+  const session = await requireAuthorizedSession(context.env, context.req.header("Cookie"));
+  requireMutationAuthorization(context.req.raw, session);
+  await resolveAuthorizedVault(context.env, context.req.param("vaultId"));
+  if (!context.env.GOOGLE_CLIENT_ID || !context.env.GOOGLE_CLIENT_SECRET || !context.env.SYNC_CREDENTIALS_KEY) {
+    throw new WebApiError(503, "google_drive_sync_not_configured");
+  }
+  const state = await createSyncOAuthState(context.env.EVENT_DB, session.githubUserId, context.req.param("vaultId"));
+  return context.json({ authorization_url: googleAuthorizationUrl({
+    clientId: context.env.GOOGLE_CLIENT_ID,
+    redirectUri: `${new URL(context.req.url).origin}/api/sync/google/callback`,
+    state,
+  }) });
+});
+
+app.get("/sync/google/callback", async (context) => {
+  const session = await requireAuthorizedSession(context.env, context.req.header("Cookie"));
+  const state = context.req.query("state") ?? "";
+  const authorization = await consumeSyncOAuthState(context.env.EVENT_DB, state, session.githubUserId);
+  if (!authorization) return context.redirect("/?sync=invalid_state");
+  const callbackLocation = (result: string) => `/?sync=${encodeURIComponent(result)}&sync_vault=${encodeURIComponent(authorization.repositoryId)}`;
+  if (context.req.query("error")) return context.redirect(callbackLocation("denied"));
+  const code = context.req.query("code");
+  if (!code || !context.env.GOOGLE_CLIENT_ID || !context.env.GOOGLE_CLIENT_SECRET || !context.env.SYNC_CREDENTIALS_KEY) {
+    return context.redirect(callbackLocation("configuration_error"));
+  }
+  const vault = await resolveAuthorizedVault(context.env, authorization.repositoryId);
+  try {
+    const { refreshToken } = await exchangeGoogleCode({
+      clientId: context.env.GOOGLE_CLIENT_ID,
+      clientSecret: context.env.GOOGLE_CLIENT_SECRET,
+      code,
+      redirectUri: `${new URL(context.req.url).origin}/api/sync/google/callback`,
+    });
+    const encryptedRefreshToken = await encryptCredential(
+      context.env.SYNC_CREDENTIALS_KEY,
+      refreshToken,
+      credentialContext(session.githubUserId, authorization.repositoryId),
+    );
+    const destination = await saveGoogleDriveDestination(context.env.EVENT_DB, {
+      githubUserId: session.githubUserId,
+      repositoryId: authorization.repositoryId,
+      vault: vault.fullName,
+      encryptedRefreshToken,
+    });
+    const tree = await getMarkdownTree(context.env.GITHUB_VAULT_TOKEN, vault);
+    await enqueueSyncSnapshot(context.env, destination, tree.revision, `sync-connected:${crypto.randomUUID()}`);
+    await dispatchPendingAutomationJobs(context.env);
+    return context.redirect(callbackLocation("connected"));
+  } catch (error) {
+    console.error(JSON.stringify({ type: "sync.google_oauth_failed", error: safeError(error) }));
+    return context.redirect(callbackLocation("connection_failed"));
+  }
+});
+
+app.post("/vaults/:vaultId/sync/:destinationId/run", async (context) => {
+  const session = await requireAuthorizedSession(context.env, context.req.header("Cookie"));
+  requireMutationAuthorization(context.req.raw, session);
+  const vault = await resolveAuthorizedVault(context.env, context.req.param("vaultId"));
+  const destination = (await listSyncDestinations(context.env.EVENT_DB, session.githubUserId, context.req.param("vaultId")))
+    .find((candidate) => candidate.destinationId === context.req.param("destinationId"));
+  if (!destination) throw new WebApiError(404, "sync_destination_not_found");
+  const tree = await getMarkdownTree(context.env.GITHUB_VAULT_TOKEN, vault);
+  await enqueueSyncSnapshot(context.env, destination, tree.revision, `sync-manual:${crypto.randomUUID()}`);
+  await dispatchPendingAutomationJobs(context.env);
+  return context.json({ queued: true, revision: tree.revision });
+});
+
+app.delete("/vaults/:vaultId/sync/:destinationId", async (context) => {
+  const session = await requireAuthorizedSession(context.env, context.req.header("Cookie"));
+  requireMutationAuthorization(context.req.raw, session);
+  await resolveAuthorizedVault(context.env, context.req.param("vaultId"));
+  const deleted = await deleteSyncDestination(context.env.EVENT_DB, session.githubUserId, context.req.param("vaultId"), context.req.param("destinationId"));
+  if (!deleted) throw new WebApiError(404, "sync_destination_not_found");
+  return context.json({ deleted: true, remote_copy_preserved: true });
 });
 
 app.post("/vaults/:vaultId/chat", async (context) => {

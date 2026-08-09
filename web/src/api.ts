@@ -45,6 +45,23 @@ export interface SearchMatch {
   htmlUrl: string;
 }
 
+export interface SyncDestination {
+  id: string;
+  provider: "google_drive";
+  status: "active" | "reauthorization_required" | "disabled";
+  last_synced_revision?: string;
+  last_synced_at?: number;
+  last_error?: string;
+  folder_url?: string;
+  updated_at: number;
+}
+
+export interface VaultSyncSettings {
+  vault: string;
+  google_drive_configured: boolean;
+  destinations: SyncDestination[];
+}
+
 export interface ChatReply {
   answer: string;
   citations: Array<{ id: string; path: string; sha: string }>;
@@ -132,6 +149,32 @@ export async function searchNotes(vaultId: string, query: string): Promise<Searc
     `/api/vaults/${encodeURIComponent(vaultId)}/search?q=${encodeURIComponent(query)}&limit=20`,
   ));
   return result.matches;
+}
+
+export async function getVaultSync(vaultId: string): Promise<VaultSyncSettings> {
+  return json(await fetch(`/api/vaults/${encodeURIComponent(vaultId)}/sync`));
+}
+
+export async function connectGoogleDrive(vaultId: string, csrf: string): Promise<string> {
+  const result = await json<{ authorization_url: string }>(await fetch(`/api/vaults/${encodeURIComponent(vaultId)}/sync/google/start`, {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+  }));
+  return result.authorization_url;
+}
+
+export async function runVaultSync(vaultId: string, destinationId: string, csrf: string): Promise<{ revision: string }> {
+  return json(await fetch(`/api/vaults/${encodeURIComponent(vaultId)}/sync/${encodeURIComponent(destinationId)}/run`, {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+  }));
+}
+
+export async function disconnectVaultSync(vaultId: string, destinationId: string, csrf: string): Promise<void> {
+  await json(await fetch(`/api/vaults/${encodeURIComponent(vaultId)}/sync/${encodeURIComponent(destinationId)}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  }));
 }
 
 export async function chat(

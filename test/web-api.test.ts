@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Miniflare } from "miniflare";
 import webPortalMigration from "../migrations/0003_web_portal.sql?raw";
 import webChatLeasesMigration from "../migrations/0004_web_chat_leases.sql?raw";
+import vaultSyncMigration from "../migrations/0005_vault_sync.sql?raw";
 import { WebApiHandler } from "../src/webApi";
 import { createWebSession } from "../src/webSession";
 import type { Env } from "../src/types";
@@ -21,7 +22,7 @@ describe("web API authorization", () => {
       d1Databases: ["EVENT_DB"],
     });
     db = await runtime.getD1Database("EVENT_DB");
-    for (const statement of `${webPortalMigration}\n${webChatLeasesMigration}`.split(";").map((sql) => sql.trim()).filter(Boolean)) {
+    for (const statement of `${webPortalMigration}\n${webChatLeasesMigration}\n${vaultSyncMigration}`.split(";").map((sql) => sql.trim()).filter(Boolean)) {
       await db.prepare(statement).run();
     }
     env = {
@@ -216,5 +217,39 @@ describe("web API authorization", () => {
     }, env);
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "vault_not_found" });
+  });
+
+  it("starts Google sync only with the owner session, same-origin CSRF, and narrow Drive scope", async () => {
+    const created = await createWebSession(db, "123456", "owner");
+    const cookie = created.cookie.split(";", 1)[0] ?? "";
+    env.GOOGLE_CLIENT_ID = "google-client";
+    env.GOOGLE_CLIENT_SECRET = "google-secret";
+    env.SYNC_CREDENTIALS_KEY = "A".repeat(43);
+    globalThis.fetch = vi.fn(async (input: string | URL | Request) => {
+      if (String(input).endsWith("/repos/owner/vault")) return Response.json({ id: 123, default_branch: "main" });
+      throw new Error(`unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+
+    const rejected = await WebApiHandler.request("https://vault.example/vaults/123/sync/google/start", {
+      method: "POST",
+      headers: { Cookie: cookie, Origin: "https://attacker.example", "X-CSRF-Token": created.session.csrfSecret },
+    }, env);
+    expect(rejected.status).toBe(403);
+
+    const response = await WebApiHandler.request("https://vault.example/vaults/123/sync/google/start", {
+      method: "POST",
+      headers: { Cookie: cookie, Origin: "https://vault.example", "X-CSRF-Token": created.session.csrfSecret },
+    }, env);
+    expect(response.status).toBe(200);
+    const authorizationUrl = new URL((await response.json<{ authorization_url: string }>()).authorization_url);
+    expect(authorizationUrl.searchParams.get("scope")).toBe("https://www.googleapis.com/auth/drive.file");
+    expect(authorizationUrl.searchParams.get("include_granted_scopes")).toBeNull();
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM vault_sync_oauth_states").first()).toEqual({ count: 1 });
+
+    const callback = await WebApiHandler.request(`https://vault.example/sync/google/callback?error=access_denied&state=${encodeURIComponent(authorizationUrl.searchParams.get("state") ?? "")}`, {
+      headers: { Cookie: cookie },
+    }, env);
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get("location")).toBe("/?sync=denied&sync_vault=123");
   });
 });
