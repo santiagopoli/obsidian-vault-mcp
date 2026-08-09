@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { buildVaultGraph, noteByPath, type VaultDocument, type VaultGraph } from "./graph";
+import { buildVaultGraph, findShortestPath, noteByPath, type VaultDocument, type VaultGraph } from "./graph";
 import { excerptAround, getMarkdownTree, rankMarkdownDocuments, readMarkdownBlobAtSha, readMarkdownTree, type MarkdownTree } from "./github";
 import type { Env, VaultConfig } from "./types";
 
-export type VaultAgentToolName = "list_notes" | "search_notes" | "read_notes" | "get_note_links" | "get_graph_overview";
+export type VaultAgentToolName = "list_notes" | "search_notes" | "read_notes" | "get_note_links" | "get_graph_overview" | "get_graph_neighbors" | "find_graph_path";
 
 export interface AgentTraceNote {
   path: string;
@@ -15,7 +15,7 @@ export interface AgentTraceEvent {
   step: number;
   tool: VaultAgentToolName;
   status: "completed" | "failed";
-  input: { query?: string; prefix?: string; paths?: string[]; path?: string };
+  input: { query?: string; prefix?: string; paths?: string[]; path?: string; from_path?: string; to_path?: string; direction?: string };
   summary: string;
   notes: AgentTraceNote[];
 }
@@ -96,6 +96,39 @@ export const vaultAgentToolDefinitions = [
       required: ["limit"],
     },
   },
+  {
+    type: "function",
+    name: "get_graph_neighbors",
+    description: "Inspect the notes directly connected to one exact note, following outgoing links, backlinks, or both directions.",
+    strict: true,
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        path: { type: "string", minLength: 1, maxLength: 500 },
+        direction: { type: "string", enum: ["outgoing", "backlinks", "both"] },
+        limit: { type: "integer", minimum: 1, maximum: 50 },
+      },
+      required: ["path", "direction", "limit"],
+    },
+  },
+  {
+    type: "function",
+    name: "find_graph_path",
+    description: "Find the shortest link path between two exact notes. Use this to explain how ideas or story elements are connected.",
+    strict: true,
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        from_path: { type: "string", minLength: 1, maxLength: 500 },
+        to_path: { type: "string", minLength: 1, maxLength: 500 },
+        direction: { type: "string", enum: ["outgoing", "backlinks", "both"] },
+        max_depth: { type: "integer", minimum: 1, maximum: 20 },
+      },
+      required: ["from_path", "to_path", "direction", "max_depth"],
+    },
+  },
 ] as const;
 
 const listSchema = z.object({ prefix: z.string().max(500).nullable(), limit: z.number().int().min(1).max(50), offset: z.number().int().min(0).max(1_000) }).strict();
@@ -103,6 +136,17 @@ const searchSchema = z.object({ query: z.string().trim().min(2).max(200), prefix
 const readSchema = z.object({ paths: z.array(z.string().min(1).max(500)).min(1).max(6) }).strict();
 const linksSchema = z.object({ path: z.string().min(1).max(500) }).strict();
 const graphSchema = z.object({ limit: z.number().int().min(1).max(20) }).strict();
+const neighborsSchema = z.object({
+  path: z.string().min(1).max(500),
+  direction: z.enum(["outgoing", "backlinks", "both"]),
+  limit: z.number().int().min(1).max(50),
+}).strict();
+const pathSchema = z.object({
+  from_path: z.string().min(1).max(500),
+  to_path: z.string().min(1).max(500),
+  direction: z.enum(["outgoing", "backlinks", "both"]),
+  max_depth: z.number().int().min(1).max(20),
+}).strict();
 
 export class VaultAgentToolbox {
   private readonly filesByPath: Map<string, { path: string; sha: string; size?: number }>;
@@ -162,6 +206,8 @@ export class VaultAgentToolbox {
         case "read_notes": return await this.readNotes(readSchema.parse(parsed), traceId, step);
         case "get_note_links": return await this.getNoteLinks(linksSchema.parse(parsed), traceId, step);
         case "get_graph_overview": return await this.getGraphOverview(graphSchema.parse(parsed), traceId, step);
+        case "get_graph_neighbors": return await this.getGraphNeighbors(neighborsSchema.parse(parsed), traceId, step);
+        case "find_graph_path": return await this.findGraphPath(pathSchema.parse(parsed), traceId, step);
         default: throw new Error("Unknown vault tool");
       }
     } catch (error) {
@@ -258,6 +304,64 @@ export class VaultAgentToolbox {
     return {
       output: safeJson({ revision: this.tree.revision, stats: { notes: graph.notes.length, edges: graph.edges.length, unresolved: graph.unresolved.length }, prominent, tags }),
       trace: { id, step, tool: "get_graph_overview", status: "completed", input: {}, summary: `Inspected a graph with ${graph.notes.length} notes and ${graph.edges.length} links`, notes: prominent.map(({ path, sha }) => ({ path, sha })) },
+    };
+  }
+
+  private async getGraphNeighbors(input: z.infer<typeof neighborsSchema>, id: string, step: number): Promise<AgentToolExecution> {
+    this.requireAllowedPath(input.path);
+    const graph = await this.graph();
+    const source = noteByPath(graph, input.path);
+    if (!source) throw new Error("Note was not found in the graph snapshot");
+    const paths = input.direction === "outgoing"
+      ? source.outgoing
+      : input.direction === "backlinks"
+        ? source.backlinks
+        : [...new Set([...source.outgoing, ...source.backlinks])].sort();
+    const neighbors = paths.slice(0, input.limit).flatMap((path) => {
+      const note = noteByPath(graph, path);
+      return note ? [{
+        path: note.path,
+        sha: note.sha,
+        title: note.title,
+        tags: note.tags,
+        outgoing: note.outgoing.length,
+        backlinks: note.backlinks.length,
+      }] : [];
+    });
+    return {
+      output: safeJson({ revision: this.tree.revision, source: source.path, direction: input.direction, total: paths.length, neighbors }),
+      trace: {
+        id,
+        step,
+        tool: "get_graph_neighbors",
+        status: "completed",
+        input: { path: source.path, direction: input.direction },
+        summary: `Found ${paths.length} notes connected to ${source.title}`,
+        notes: [{ path: source.path, sha: source.sha }, ...neighbors.map(({ path, sha }) => ({ path, sha }))],
+      },
+    };
+  }
+
+  private async findGraphPath(input: z.infer<typeof pathSchema>, id: string, step: number): Promise<AgentToolExecution> {
+    this.requireAllowedPath(input.from_path);
+    this.requireAllowedPath(input.to_path);
+    const graph = await this.graph();
+    const path = findShortestPath(graph, input.from_path, input.to_path, input.direction, input.max_depth);
+    const notes = (path ?? []).flatMap((notePath) => {
+      const note = noteByPath(graph, notePath);
+      return note ? [{ path: note.path, sha: note.sha }] : [];
+    });
+    return {
+      output: safeJson({ revision: this.tree.revision, from: input.from_path, to: input.to_path, direction: input.direction, path: path ?? null }),
+      trace: {
+        id,
+        step,
+        tool: "find_graph_path",
+        status: "completed",
+        input: { from_path: input.from_path, to_path: input.to_path, direction: input.direction },
+        summary: path ? `Found a ${path.length - 1}-link path` : "No path was found within the selected depth",
+        notes,
+      },
     };
   }
 

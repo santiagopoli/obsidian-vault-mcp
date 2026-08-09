@@ -24,6 +24,8 @@ import {
 } from "./syncStore";
 import { credentialContext, enqueueSyncSnapshot } from "./vaultSync";
 import { dispatchPendingAutomationJobs } from "./eventQueue";
+import { findShortestPath, isGraphOrphan, noteByPath } from "./graph";
+import { loadVaultGraph } from "./vaultGraphSnapshot";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -133,6 +135,57 @@ app.get("/vaults/:vaultId/search", async (context) => {
   const offset = boundedInteger(context.req.query("offset"), 0, 0, 900);
   const result = await searchMarkdownFiles(context.env.GITHUB_VAULT_TOKEN, vault, query, prefix, limit, offset);
   return context.json({ ...result, count: result.matches.length, offset });
+});
+
+app.get("/vaults/:vaultId/graph", async (context) => {
+  await requireAuthorizedSession(context.env, context.req.header("Cookie"));
+  const vault = await resolveAuthorizedVault(context.env, context.req.param("vaultId"), context.req.raw.signal);
+  const snapshot = await loadVaultGraph(context.env, vault, context.req.raw.signal);
+  const nodes = snapshot.graph.notes.map((note) => ({
+    path: note.path,
+    title: note.title,
+    tags: note.tags,
+    outgoing_count: note.outgoing.length,
+    backlink_count: note.backlinks.length,
+    orphan: isGraphOrphan(snapshot.graph, note.path),
+  }));
+  const edges = snapshot.graph.edges.slice(0, 10_000).map((edge) => ({
+    source: edge.source,
+    target: edge.target,
+    kind: edge.kind,
+    embedded: edge.embedded,
+  }));
+  const orphans = nodes.filter(({ orphan }) => orphan).length;
+  return context.json({
+    revision: snapshot.revision,
+    stats: { nodes: nodes.length, edges: snapshot.graph.edges.length, orphans, unresolved: snapshot.graph.unresolved.length },
+    nodes,
+    edges,
+    truncated: edges.length < snapshot.graph.edges.length,
+    unresolved_count: snapshot.graph.unresolved.length,
+  });
+});
+
+app.get("/vaults/:vaultId/graph/path", async (context) => {
+  await requireAuthorizedSession(context.env, context.req.header("Cookie"));
+  const vault = await resolveAuthorizedVault(context.env, context.req.param("vaultId"), context.req.raw.signal);
+  const from = requiredGraphPath(context.req.query("from"));
+  const to = requiredGraphPath(context.req.query("to"));
+  const direction = graphDirection(context.req.query("direction"));
+  const maxDepth = graphDepth(context.req.query("max_depth"));
+  const snapshot = await loadVaultGraph(context.env, vault, context.req.raw.signal);
+  if (!noteByPath(snapshot.graph, from) || !noteByPath(snapshot.graph, to)) {
+    throw new WebApiError(404, "graph_note_not_found");
+  }
+  const path = findShortestPath(snapshot.graph, from, to, direction, maxDepth);
+  return context.json({
+    revision: snapshot.revision,
+    found: Boolean(path),
+    path: path ?? [],
+    distance: path ? path.length - 1 : null,
+    direction,
+    max_depth: maxDepth,
+  });
 });
 
 app.get("/vaults/:vaultId/sync", async (context) => {
@@ -461,6 +514,26 @@ function optionalQuery(value: string | undefined, maximum: number): string | und
   if (!value) return undefined;
   if (value.length > maximum) throw new WebApiError(400, "query_too_long");
   return value;
+}
+
+function requiredGraphPath(value: string | undefined): string {
+  if (!value || value.length > 500) throw new WebApiError(400, "invalid_graph_path");
+  return value;
+}
+
+function graphDirection(value: string | undefined): "outgoing" | "backlinks" | "both" {
+  const direction = value ?? "both";
+  if (direction !== "outgoing" && direction !== "backlinks" && direction !== "both") {
+    throw new WebApiError(400, "invalid_graph_direction");
+  }
+  return direction;
+}
+
+function graphDepth(value: string | undefined): number {
+  if (value === undefined) return 6;
+  const depth = Number(value);
+  if (!Number.isInteger(depth) || depth < 1 || depth > 12) throw new WebApiError(400, "invalid_graph_depth");
+  return depth;
 }
 
 function safeError(error: unknown): string {

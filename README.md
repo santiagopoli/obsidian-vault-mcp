@@ -2,7 +2,7 @@
 
 A self-hosted Model Context Protocol server for private Obsidian vaults stored in GitHub. It runs on Cloudflare Workers, authenticates the vault owner with OAuth 2.1, and exposes Markdown notes, an Obsidian-compatible link graph, and a durable event stream for vault automations.
 
-The same Worker also serves an optional private web portal with a vault switcher, Markdown reader, content search, an ephemeral read-only AI chat with verified note citations, and callback-driven vault snapshots to Google Drive.
+The same Worker also serves an optional private web portal with a vault switcher, Markdown reader, content search, an interactive Graph Explorer, an ephemeral read-only AI chat with verified note citations, and callback-driven vault snapshots to Google Drive.
 
 The server does not run Obsidian. It derives links, backlinks, aliases, tags, embeds, unresolved references, and shortest paths from an immutable GitHub tree snapshot.
 
@@ -65,6 +65,8 @@ bunx wrangler secret put OPENAI_API_KEY
 - A read-only agent can search, read exact note revisions, and inspect the graph within one selected vault or note. The UI shows its tool activity and aggregate token usage; every citation is checked against retrieved evidence.
 
 See [Web portal and vault chat](docs/web-portal.md) for the API, privacy model, and current multi-user boundary.
+
+The portal's [Graph Explorer](docs/graph-explorer.md) filters notes by path or tag, shows incoming and outgoing link counts, and finds bounded shortest connection trails without exposing note bodies to the browser graph response.
 
 ## Vault sync callbacks
 
