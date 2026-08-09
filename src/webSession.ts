@@ -79,6 +79,7 @@ export async function cleanupWebPortalState(db: D1Database, now = new Date()): P
     db.prepare("DELETE FROM mcp_consent_states WHERE expires_at <= ?").bind(nowSeconds),
     db.prepare("DELETE FROM web_sessions WHERE expires_at <= ?").bind(nowSeconds),
     db.prepare("DELETE FROM web_chat_usage WHERE usage_day < ?").bind(usageCutoff),
+    db.prepare("DELETE FROM web_chat_leases WHERE expires_at <= ?").bind(nowSeconds),
   ]);
 }
 

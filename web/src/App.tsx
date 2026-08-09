@@ -4,6 +4,7 @@ import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import {
   ApiError,
+  AgentChatError,
   chat,
   getNote,
   getAllNotes,
@@ -13,6 +14,11 @@ import {
   searchNotes,
   type Note,
   type NoteSummary,
+  type AgentTraceEvent,
+  type AgentUsage,
+  type ChatModelId,
+  type ChatProgress,
+  type ReasoningEffort,
   type SearchMatch,
   type Session,
   type Vault,
@@ -21,11 +27,19 @@ import { buildNoteTree, type NoteTreeNode } from "./noteTree";
 import { markdownLinkTarget, prepareObsidianMarkdown, resolveInternalNotePath } from "./obsidianMarkdown";
 
 type ChatMessage = {
+  id: string;
   role: "user" | "assistant";
   content: string;
   citations?: Array<{ id: string; path: string; sha: string }>;
   noteCount?: number;
+  trace?: AgentTraceEvent[];
+  usage?: AgentUsage;
+  model?: ChatModelId;
+  reasoningEffort?: ReasoningEffort;
+  failed?: boolean;
 };
+
+type PendingActivity = { phase: string; trace: AgentTraceEvent[]; usage: AgentUsage };
 
 export function App() {
   const [session, setSession] = useState<Session>();
@@ -46,10 +60,14 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [question, setQuestion] = useState("");
   const [chatScope, setChatScope] = useState<"note" | "vault">("vault");
+  const [chatModel, setChatModel] = useState<ChatModelId>("gpt-5.6-sol");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [asking, setAsking] = useState(false);
+  const [pendingActivity, setPendingActivity] = useState<PendingActivity>();
   const [error, setError] = useState<string>();
   const [mobilePane, setMobilePane] = useState<"files" | "note" | "chat">("files");
   const vaultIdRef = useRef(vaultId);
+  const chatAbortRef = useRef<AbortController | undefined>(undefined);
   vaultIdRef.current = vaultId;
 
   useEffect(() => {
@@ -57,6 +75,8 @@ export function App() {
       .then(async (current) => {
         setSession(current);
         if (!current) return;
+        setChatModel(current.chat.default_model);
+        setReasoningEffort(current.chat.default_reasoning_effort);
         const available = await getVaults();
         setVaults(available);
         setVaultId(available[0]?.id ?? "");
@@ -114,6 +134,10 @@ export function App() {
   const chatContextRef = useRef(chatContextKey);
   chatContextRef.current = chatContextKey;
   useEffect(() => {
+    chatAbortRef.current?.abort();
+    chatAbortRef.current = undefined;
+    setAsking(false);
+    setPendingActivity(undefined);
     setMessages([]);
     setQuestion("");
   }, [chatContextKey]);
@@ -121,6 +145,7 @@ export function App() {
   const noteTree = useMemo(() => buildNoteTree(notes, filter), [filter, notes]);
   const preparedNote = useMemo(() => note ? prepareObsidianMarkdown(note.content) : undefined, [note]);
   const currentVault = vaults.find((vault) => vault.id === vaultId);
+  const conversationUsage = useMemo(() => sumUsage(messages.flatMap((message) => message.usage ? [message.usage] : [])), [messages]);
 
   async function submitSearch(event: FormEvent) {
     event.preventDefault();
@@ -143,35 +168,74 @@ export function App() {
     event.preventDefault();
     const cleanQuestion = question.trim();
     if (!session || !vaultId || !cleanQuestion || (chatScope === "note" && !selectedPath)) return;
-    const nextUser: ChatMessage = { role: "user", content: cleanQuestion };
-    const history = messages.slice(-8).map(({ role, content }) => ({ role, content }));
+    const nextUser: ChatMessage = { id: messageId(), role: "user", content: cleanQuestion };
+    const history = messages.filter((message) => !message.failed).slice(-8).map(({ role, content }) => ({ role, content }));
     setMessages((current) => [...current, nextUser]);
     setQuestion("");
     setAsking(true);
+    setPendingActivity({ phase: "Preparing vault snapshot…", trace: [], usage: emptyUsage() });
     setError(undefined);
+    const abortController = new AbortController();
+    chatAbortRef.current = abortController;
+    const requestedVault = vaultId;
+    const requestedScope = chatScope;
+    const requestedPath = selectedPath;
+    const requestedContext = chatContextKey;
+    const requestedModel = chatModel;
+    const requestedReasoning = reasoningEffort;
     try {
-      const requestedVault = vaultId;
-      const requestedScope = chatScope;
-      const requestedPath = selectedPath;
-      const requestedContext = chatContextKey;
       const reply = await chat(requestedVault, session.csrf_token, {
         question: cleanQuestion,
         activePath: requestedScope === "note" ? requestedPath || undefined : undefined,
-        scope: chatScope,
+        scope: requestedScope,
         history,
+        model: requestedModel,
+        reasoning_effort: requestedReasoning,
+      }, {
+        signal: abortController.signal,
+        onProgress: (progress) => {
+          if (vaultIdRef.current !== requestedVault || chatContextRef.current !== requestedContext) return;
+          setPendingActivity((current) => updatePendingActivity(current, progress));
+        },
       });
       if (vaultIdRef.current !== requestedVault || chatContextRef.current !== requestedContext) return;
       setMessages((current) => [...current, {
+        id: messageId(),
         role: "assistant",
         content: reply.answer,
         citations: reply.citations,
         noteCount: reply.context.note_count,
+        trace: reply.trace,
+        usage: reply.usage,
+        model: reply.agent.model,
+        reasoningEffort: reply.agent.reasoning_effort,
       }]);
     } catch (caught) {
+      if (abortController.signal.aborted) return;
       setError(messageFor(caught));
-      setQuestion(cleanQuestion);
+      const hasPartialRun = caught instanceof AgentChatError && (caught.usage.totalTokens > 0 || caught.trace.length > 0);
+      if (hasPartialRun) {
+        setMessages((current) => [...current.map((message) => message.id === nextUser.id ? { ...message, failed: true } : message), {
+          id: messageId(),
+          role: "assistant",
+          content: `This turn stopped before an answer: ${messageFor(caught)}`,
+          trace: caught.trace,
+          usage: caught.usage,
+          model: requestedModel,
+          reasoningEffort: requestedReasoning,
+          noteCount: uniqueTraceNotes(caught.trace).length,
+          failed: true,
+        }]);
+      } else {
+        setMessages((current) => current.filter((message) => message.id !== nextUser.id));
+        setQuestion(cleanQuestion);
+      }
     } finally {
-      setAsking(false);
+      if (chatAbortRef.current === abortController) {
+        chatAbortRef.current = undefined;
+        setAsking(false);
+        setPendingActivity(undefined);
+      }
     }
   }
 
@@ -287,7 +351,19 @@ export function App() {
         </main>
 
         <aside className="chat-panel" aria-label="Ask your vault">
-          <div className="chat-header"><div><span className="eyebrow">Grounded answers</span><h2>Ask your vault</h2></div><SparkIcon /></div>
+          <div className="chat-header"><div><span className="eyebrow">Agentic · read only</span><h2>Ask your vault</h2></div><SparkIcon /></div>
+          <div className="agent-controls">
+            <label>Model<select value={chatModel} onChange={(event) => setChatModel(event.target.value as ChatModelId)} disabled={asking}>
+              {session.chat.models.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+            </select></label>
+            <label>Reasoning<select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)} disabled={asking}>
+              {session.chat.reasoning_efforts.map((effort) => <option key={effort} value={effort}>{reasoningLabel(effort)}</option>)}
+            </select></label>
+            <button className="new-chat" onClick={() => { chatAbortRef.current?.abort(); setMessages([]); setQuestion(""); setPendingActivity(undefined); setAsking(false); }} disabled={!asking && messages.length === 0}>New chat</button>
+          </div>
+          <div className="conversation-meter" aria-label={`${formatTokens(conversationUsage.totalTokens)} tokens used in this conversation`}>
+            <span>{formatTokens(conversationUsage.totalTokens)} tokens</span><span>{conversationUsage.requests} model call{conversationUsage.requests === 1 ? "" : "s"}</span>
+          </div>
           <div className="scope-control">
             <span>Context</span>
             <div className="segmented">
@@ -296,20 +372,30 @@ export function App() {
             </div>
             {selectedPath && <span className="context-chip"><DocumentIcon />{basename(selectedPath)}</span>}
           </div>
-          <div className="messages" aria-live="polite">
+          <div className="messages">
             {messages.length === 0 && <div className="chat-empty"><SparkIcon /><h3>{session.chat_enabled ? "Ask with evidence" : "Chat is not enabled"}</h3><p>{session.chat_enabled ? "I’ll search only this vault and show which notes supported the answer." : "Add the OpenAI secret and enable vault chat in this deployment."}</p><div className="suggestions">
               <button disabled={!session.chat_enabled} onClick={() => setQuestion("Summarize the main themes in this vault")}>Summarize the main themes</button>
               <button disabled={!session.chat_enabled || !selectedPath} onClick={() => setQuestion("What are the key facts in this note?")}>Explain this note</button>
             </div></div>}
-            {messages.map((message, index) => <div className={`message ${message.role}`} key={index}>
-              <span className="message-role">{message.role === "assistant" ? "Vault" : "You"}</span>
-              {message.role === "assistant" ? <ReactMarkdown>{message.content}</ReactMarkdown> : <p>{message.content}</p>}
+            {messages.map((message) => <div className={`message ${message.role}`} key={message.id}>
+              <span className="message-role">{message.role === "assistant" ? "Vault agent" : "You"}</span>
+              {message.role === "assistant" ? <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.content}</ReactMarkdown> : <p>{message.content}</p>}
               {message.citations && message.citations.length > 0 && <div className="citations">
                 {message.citations.map((citation) => <button key={citation.id} onClick={() => { setSelectedSha(citation.sha); setSelectedPath(citation.path); setMobilePane("note"); }}><span>{citation.id}</span>{basename(citation.path)}</button>)}
               </div>}
-              {message.noteCount !== undefined && <small className="context-count">AI received {message.noteCount} note{message.noteCount === 1 ? "" : "s"}</small>}
+              {message.noteCount !== undefined && <small className="context-count">Agent inspected {message.noteCount} note revision{message.noteCount === 1 ? "" : "s"}</small>}
+              {message.role === "assistant" && message.usage && <AgentActivity
+                trace={message.trace ?? []}
+                usage={message.usage}
+                model={message.model}
+                reasoningEffort={message.reasoningEffort}
+                onOpenNote={(path, sha) => { setSelectedSha(sha); setSelectedPath(path); setMobilePane("note"); }}
+              />}
             </div>)}
-            {asking && <div className="message assistant thinking" role="status" aria-label="Searching the vault"><span></span><span></span><span></span></div>}
+            {asking && pendingActivity && <div className="message assistant pending-agent" role="status" aria-live="polite" aria-label="The vault agent is working">
+              <div className="thinking"><span></span><span></span><span></span><small>{pendingActivity.phase}</small></div>
+              <AgentActivity trace={pendingActivity.trace} usage={pendingActivity.usage} model={chatModel} reasoningEffort={reasoningEffort} live onOpenNote={(path, sha) => { setSelectedSha(sha); setSelectedPath(path); setMobilePane("note"); }} />
+            </div>}
           </div>
           <form className="composer" onSubmit={submitQuestion}>
             <label className="sr-only" htmlFor="vault-question">Question for your vault</label>
@@ -321,6 +407,30 @@ export function App() {
       </div>
     </div>
   );
+}
+
+function AgentActivity({ trace, usage, model, reasoningEffort, live, onOpenNote }: {
+  trace: AgentTraceEvent[];
+  usage: AgentUsage;
+  model?: ChatModelId;
+  reasoningEffort?: ReasoningEffort;
+  live?: boolean;
+  onOpenNote: (path: string, sha: string) => void;
+}) {
+  return <details className="agent-activity" open={live || undefined}>
+    <summary><span>Activity</span><span>{trace.length} tool{trace.length === 1 ? "" : "s"} · {formatTokens(usage.totalTokens)} tokens</span></summary>
+    <div className="agent-run-meta">
+      <span>{modelLabel(model)}</span><span>{reasoningLabel(reasoningEffort)} reasoning</span><span>{usage.requests} model call{usage.requests === 1 ? "" : "s"}</span>
+    </div>
+    {trace.length === 0 ? <p className="no-tools">{live ? "No vault actions yet." : "Answered without opening vault notes."}</p> : <ol className="agent-steps">
+      {trace.map((event) => <li key={event.id} className={event.status === "failed" ? "failed" : undefined}>
+        <div><span className="tool-name">{toolLabel(event.tool)}</span><span>{event.summary}</span></div>
+        {event.notes.length > 0 && <div className="trace-notes">{event.notes.map((traceNote) => <button key={`${traceNote.path}:${traceNote.sha}`} onClick={() => onOpenNote(traceNote.path, traceNote.sha)} aria-label={`Open note ${traceNote.path}`} title={traceNote.path}>{traceNote.path}</button>)}</div>}
+      </li>)}
+    </ol>}
+    <dl className="token-breakdown"><div><dt>Input</dt><dd>{formatTokens(usage.inputTokens)}</dd></div><div><dt>Output</dt><dd>{formatTokens(usage.outputTokens)}</dd></div><div><dt>Reasoning</dt><dd>{formatTokens(usage.reasoningTokens)}</dd></div><div><dt>Cached</dt><dd>{formatTokens(usage.cachedInputTokens)}</dd></div></dl>
+    <p className="trace-privacy">Shows actions and note paths, never private reasoning.</p>
+  </details>;
 }
 
 function SignIn({ error }: { error?: string }) {
@@ -369,6 +479,52 @@ function countNotes(folder: Extract<NoteTreeNode, { type: "folder" }>): number {
 function basename(path: string) { return path.split("/").pop()?.replace(/\.md$/i, "") ?? path; }
 function dirname(path: string) { const parts = path.split("/"); parts.pop(); return parts.join(" / ") || "Vault root"; }
 function safeExternalHref(href: string | undefined) { if (!href) return undefined; return /^(https?:|mailto:)/i.test(href) ? href : undefined; }
+let messageSequence = 0;
+function messageId() { messageSequence += 1; return `message-${Date.now()}-${messageSequence}`; }
+function formatTokens(value: number) { return new Intl.NumberFormat(undefined, { notation: value >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value); }
+function sumUsage(values: AgentUsage[]): AgentUsage {
+  return values.reduce<AgentUsage>((total, usage) => ({
+    requests: total.requests + usage.requests,
+    inputTokens: total.inputTokens + usage.inputTokens,
+    outputTokens: total.outputTokens + usage.outputTokens,
+    totalTokens: total.totalTokens + usage.totalTokens,
+    cachedInputTokens: total.cachedInputTokens + usage.cachedInputTokens,
+    cacheWriteTokens: total.cacheWriteTokens + usage.cacheWriteTokens,
+    reasoningTokens: total.reasoningTokens + usage.reasoningTokens,
+  }), emptyUsage());
+}
+function emptyUsage(): AgentUsage { return { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 }; }
+function updatePendingActivity(current: PendingActivity | undefined, progress: ChatProgress): PendingActivity {
+  const pending = current ?? { phase: "Preparing vault snapshot…", trace: [], usage: emptyUsage() };
+  if (progress.type === "status") return { ...pending, phase: "Preparing vault snapshot…" };
+  if (progress.type === "model_request") return { ...pending, phase: `Reasoning · model pass ${progress.round}` };
+  if (progress.type === "usage") return { ...pending, usage: progress.usage };
+  return { ...pending, phase: progress.trace.summary, trace: [...pending.trace, progress.trace] };
+}
+function uniqueTraceNotes(trace: AgentTraceEvent[]) {
+  return [...new Map(trace.flatMap((event) => event.notes).map((note) => [`${note.path}\0${note.sha}`, note])).values()];
+}
+function modelLabel(model: ChatModelId | undefined) {
+  if (model === "gpt-5.6-terra") return "Terra";
+  if (model === "gpt-5.6-luna") return "Luna";
+  return "Sol";
+}
+function reasoningLabel(effort: ReasoningEffort | undefined) {
+  if (effort === "none") return "None";
+  if (effort === "xhigh") return "Extra high";
+  if (effort === "max") return "Maximum";
+  return effort ? effort[0].toUpperCase() + effort.slice(1) : "Medium";
+}
+function toolLabel(tool: AgentTraceEvent["tool"]) {
+  const labels: Record<AgentTraceEvent["tool"], string> = {
+    list_notes: "Listed notes",
+    search_notes: "Searched notes",
+    read_notes: "Read notes",
+    get_note_links: "Checked links",
+    get_graph_overview: "Inspected graph",
+  };
+  return labels[tool];
+}
 function messageFor(error: unknown) {
   if (!(error instanceof ApiError)) return "Something went wrong. Please try again.";
   const messages: Record<string, string> = {
@@ -376,6 +532,12 @@ function messageFor(error: unknown) {
     chat_daily_limit_reached: "The daily chat limit has been reached.",
     model_rate_limited: "The model is busy. Try again in a moment.",
     model_unavailable: "The model is temporarily unavailable.",
+    model_output_limit: "The answer exceeded the model limit. Try a narrower question.",
+    agent_timeout: "The agent took too long. Try again with a narrower scope.",
+    agent_tool_limit: "The agent needed too many vault actions. Try a narrower question.",
+    agent_round_limit: "The agent could not finish within this turn. Try a narrower question.",
+    agent_context_limit: "Too much note content was needed. Try this-note scope or a narrower question.",
+    model_refused: "The model could not answer that request.",
     authentication_required: "Your session expired. Sign in again.",
     vault_not_found: "This vault is no longer available.",
   };

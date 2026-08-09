@@ -1,16 +1,16 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { allowedGitHubUserId, configuredVaults, webChatEnabled } from "./config";
+import { chatModelIds, chatModels, defaultChatModel, reasoningEfforts } from "./chatModels";
 import {
   getMarkdownTree,
   getRepositoryMetadata,
-  rankMarkdownDocuments,
   readMarkdownBlobAtSha,
   readMarkdownFile,
-  readMarkdownTree,
   searchMarkdownFiles,
 } from "./github";
-import { answerVaultQuestion, chatSearchTerms, hashedSafetyIdentifier, VaultChatProviderError } from "./openaiChat";
+import { hashedSafetyIdentifier, runVaultAgent, VaultAgentProviderError, type AgentProgressEvent, type VaultAgentResult } from "./openaiAgent";
+import { VaultAgentToolbox } from "./vaultAgentTools";
 import { clearWebSessionCookie, readWebSession, revokeWebSession, secureEquals, type WebSession } from "./webSession";
 import type { Env, VaultConfig } from "./types";
 
@@ -24,7 +24,16 @@ const chatSchema = z.object({
   history: z.array(z.object({
     role: z.enum(["user", "assistant"]),
     content: z.string().min(1).max(4_000),
-  })).max(8).default([]),
+  })).max(10).default([]),
+  model: z.enum(chatModelIds),
+  reasoning_effort: z.enum(reasoningEfforts),
+}).strict().superRefine((request, context) => {
+  if (request.scope === "note" && !request.activePath) {
+    context.addIssue({ code: "custom", path: ["activePath"], message: "activePath is required for note scope" });
+  }
+  if (request.scope === "folder" && !request.pathPrefix) {
+    context.addIssue({ code: "custom", path: ["pathPrefix"], message: "pathPrefix is required for folder scope" });
+  }
 });
 
 app.use("*", async (context, next) => {
@@ -43,6 +52,14 @@ app.get("/session", async (context) => {
     expires_at: session.expiresAt,
     deployment: "single-owner",
     chat_enabled: webChatEnabled(context.env) && Boolean(context.env.OPENAI_API_KEY),
+    chat: {
+      enabled: webChatEnabled(context.env) && Boolean(context.env.OPENAI_API_KEY),
+      provider: "openai",
+      models: chatModels,
+      reasoning_efforts: reasoningEfforts,
+      default_model: defaultChatModel(context.env),
+      default_reasoning_effort: "medium",
+    },
   });
 });
 
@@ -116,7 +133,6 @@ app.post("/vaults/:vaultId/chat", async (context) => {
   if (!webChatEnabled(context.env) || !context.env.OPENAI_API_KEY) {
     throw new WebApiError(503, "chat_not_configured");
   }
-  const vault = await resolveAuthorizedVault(context.env, context.req.param("vaultId"));
   const declaredLength = Number(context.req.header("Content-Length") ?? "0");
   if (Number.isFinite(declaredLength) && declaredLength > 64_000) throw new WebApiError(413, "request_too_large");
   const rawBody = await context.req.text();
@@ -125,94 +141,65 @@ app.post("/vaults/:vaultId/chat", async (context) => {
   try { body = JSON.parse(rawBody); } catch { body = undefined; }
   const parsed = chatSchema.safeParse(body);
   if (!parsed.success) throw new WebApiError(400, "invalid_chat_request");
-  const retrieved = await retrieveSources(context.env, vault, parsed.data);
-  await reserveChatRequest(context.env, session.githubUserId);
-  const result = await answerVaultQuestion({
-    apiKey: context.env.OPENAI_API_KEY,
-    model: context.env.OPENAI_CHAT_MODEL?.trim() || "gpt-5.6-sol",
-    question: parsed.data.question,
-    history: parsed.data.history,
-    sources: retrieved.sources,
-    safetyIdentifier: await hashedSafetyIdentifier(session.githubUserId),
-  });
-  const byId = new Map(retrieved.sources.map((source) => [source.id, source]));
-  const citations = result.citationIds.flatMap((id) => {
-    const source = byId.get(id);
-    return source ? [{ id, path: source.path, sha: source.sha }] : [];
-  });
-  return context.json({
-    answer: result.answer,
-    citations,
-    context: { note_count: retrieved.sources.length, revision: retrieved.revision },
-    usage: result.usage,
-    request_id: result.requestId,
-  });
+  const deadline = Date.now() + 150_000;
+  const deadlineSignal = AbortSignal.timeout(150_000);
+  const leaseId = await acquireChatLease(context.env.EVENT_DB, session.githubUserId, Math.ceil((deadline + 150_000) / 1_000));
+  try { await reserveChatRequest(context.env, session.githubUserId); } catch (error) {
+    await releaseChatLease(context.env.EVENT_DB, session.githubUserId, leaseId);
+    throw error;
+  }
+  const execute = (signal: AbortSignal, onProgress?: (event: AgentProgressEvent) => void | Promise<void>) => executeVaultAgent(
+    context.env,
+    context.req.param("vaultId"),
+    session,
+    parsed.data,
+    signal,
+    deadline,
+    onProgress,
+  );
+
+  if (context.req.header("Accept")?.includes("application/x-ndjson")) {
+    const encoder = new TextEncoder();
+    const abortController = new AbortController();
+    let streamClosed = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const emit = (event: unknown) => {
+          if (!streamClosed) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        };
+        emit({ type: "status", phase: "preparing" });
+        void execute(AbortSignal.any([context.req.raw.signal, abortController.signal, deadlineSignal]), emit)
+          .then((result) => emit({ type: "result", reply: agentReply(result) }))
+          .catch((error) => {
+            const normalized = agentStreamError(error);
+            emit({ type: "error", ...normalized });
+          })
+          .finally(async () => {
+            await releaseChatLease(context.env.EVENT_DB, session.githubUserId, leaseId).catch(() => undefined);
+            if (!streamClosed) {
+              streamClosed = true;
+              controller.close();
+            }
+          });
+      },
+      cancel() { streamClosed = true; abortController.abort(); },
+    });
+    return new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8" } });
+  }
+
+  try {
+    return context.json(agentReply(await execute(AbortSignal.any([context.req.raw.signal, deadlineSignal]))));
+  } finally {
+    await releaseChatLease(context.env.EVENT_DB, session.githubUserId, leaseId);
+  }
 });
 
 app.onError((error, context) => {
   if (error instanceof WebApiError) return context.json({ error: error.code }, error.status);
-  if (error instanceof VaultChatProviderError) return context.json({ error: error.code }, error.status as 429 | 502 | 503);
+  if (error instanceof VaultAgentProviderError) return context.json({ error: error.code }, error.status as 408 | 422 | 429 | 502 | 503 | 504);
   console.error(JSON.stringify({ type: "web_api.failed", route: new URL(context.req.url).pathname, error: safeError(error) }));
   return context.json({ error: "request_failed" }, 500);
 });
-
-interface ChatRequest {
-  question: string;
-  activePath?: string;
-  pathPrefix?: string;
-  scope: "note" | "folder" | "vault";
-  history: Array<{ role: "user" | "assistant"; content: string }>;
-}
-
-async function retrieveSources(env: Env, vault: VaultConfig, request: ChatRequest) {
-  const tree = await getMarkdownTree(env.GITHUB_VAULT_TOKEN, vault);
-  const filesByPath = new Map(tree.files.map((file) => [file.path, file]));
-  const visibleDocuments = (request.scope === "note" ? [] : await readMarkdownTree(env.GITHUB_VAULT_TOKEN, vault, tree)).filter((document) => {
-    if (request.scope !== "folder" || !request.pathPrefix) return true;
-    return document.path.startsWith(`${request.pathPrefix.replace(/\/+$/, "")}/`);
-  });
-  const documentsByPath = new Map<string, { sha: string; content: string }>();
-  const paths: string[] = [];
-  let maxSources = 6;
-  if (request.activePath && filesByPath.has(request.activePath)) paths.push(request.activePath);
-  if (request.scope !== "note") {
-    const terms = chatSearchTerms(request.question);
-    const matches = terms.length > 0
-      ? rankMarkdownDocuments(vault, tree.revision, visibleDocuments, terms, 6, 0, false).matches
-      : [];
-    if (matches.length === 0) maxSources = 12;
-    const selected = matches.length > 0 ? matches : representativeDocuments(visibleDocuments, maxSources);
-    for (const match of selected) {
-      documentsByPath.set(match.path, match);
-      if (!paths.includes(match.path)) paths.push(match.path);
-      if (paths.length >= maxSources) break;
-    }
-  }
-
-  let remainingCharacters = 50_000;
-  const sources = [];
-  for (const path of paths.slice(0, maxSources)) {
-    if (remainingCharacters <= 0) break;
-    const file = filesByPath.get(path);
-    if (!file) continue;
-    const note = documentsByPath.get(path) ?? await readMarkdownBlobAtSha(env.GITHUB_VAULT_TOKEN, vault, path, file.sha);
-    const content = note.content.slice(0, Math.min(12_000, remainingCharacters));
-    remainingCharacters -= content.length;
-    sources.push({ id: `S${sources.length + 1}`, path, sha: note.sha, content });
-  }
-  return { revision: tree.revision, sources };
-}
-
-function representativeDocuments(documents: Array<{ path: string; sha: string; content: string }>, limit: number) {
-  return [...documents].sort((left, right) => {
-    const score = (path: string) => {
-      const lower = path.toLocaleLowerCase();
-      const preferred = /(readme|index|overview|summary|canon|story|world|character|personaje)/.test(lower) ? 30 : 0;
-      return preferred - path.split("/").length * 3;
-    };
-    return score(right.path) - score(left.path) || left.path.localeCompare(right.path);
-  }).slice(0, limit);
-}
 
 async function optionalAuthorizedSession(env: Env, cookie: string | undefined): Promise<WebSession | undefined> {
   const session = await readWebSession(env.EVENT_DB, cookie);
@@ -226,13 +213,15 @@ async function requireAuthorizedSession(env: Env, cookie: string | undefined): P
   return session;
 }
 
-async function resolveAuthorizedVault(env: Env, vaultId: string): Promise<VaultConfig> {
+async function resolveAuthorizedVault(env: Env, vaultId: string, signal?: AbortSignal): Promise<VaultConfig> {
+  signal?.throwIfAborted();
   if (!/^\d+$/.test(vaultId)) throw new WebApiError(404, "vault_not_found");
   const configured = configuredVaults(env);
   let row = await env.EVENT_DB.prepare("SELECT full_name FROM web_vault_registry WHERE repository_id = ?")
     .bind(vaultId).first<{ full_name: string }>();
   if (!row) {
-    await refreshVaultRegistry(env);
+    await refreshVaultRegistry(env, signal);
+    signal?.throwIfAborted();
     row = await env.EVENT_DB.prepare("SELECT full_name FROM web_vault_registry WHERE repository_id = ?")
       .bind(vaultId).first<{ full_name: string }>();
   }
@@ -241,10 +230,12 @@ async function resolveAuthorizedVault(env: Env, vaultId: string): Promise<VaultC
   throw new WebApiError(404, "vault_not_found");
 }
 
-async function refreshVaultRegistry(env: Env) {
+async function refreshVaultRegistry(env: Env, signal?: AbortSignal) {
   const now = Math.floor(Date.now() / 1_000);
   return Promise.all(configuredVaults(env).map(async (vault) => {
-    const metadata = await getRepositoryMetadata(env.GITHUB_VAULT_TOKEN, vault);
+    signal?.throwIfAborted();
+    const metadata = await getRepositoryMetadata(env.GITHUB_VAULT_TOKEN, vault, signal);
+    signal?.throwIfAborted();
     await env.EVENT_DB.prepare(
       "INSERT INTO web_vault_registry (repository_id, full_name, default_branch, refreshed_at) VALUES (?, ?, ?, ?) " +
       "ON CONFLICT (repository_id) DO UPDATE SET full_name = excluded.full_name, default_branch = excluded.default_branch, refreshed_at = excluded.refreshed_at",
@@ -275,6 +266,80 @@ async function reserveChatRequest(env: Env, githubUserId: string): Promise<void>
     "ON CONFLICT (github_user_id, usage_day) DO UPDATE SET request_count = request_count + 1 RETURNING request_count",
   ).bind(githubUserId, day).first<{ request_count: number }>();
   if (!row || row.request_count > limit) throw new WebApiError(429, "chat_daily_limit_reached");
+}
+
+async function acquireChatLease(db: D1Database, githubUserId: string, expiresAt: number): Promise<string> {
+  const leaseId = crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1_000);
+  const row = await db.prepare(
+    "INSERT INTO web_chat_leases (github_user_id, lease_id, expires_at) VALUES (?, ?, ?) " +
+    "ON CONFLICT (github_user_id) DO UPDATE SET lease_id = excluded.lease_id, expires_at = excluded.expires_at " +
+    "WHERE web_chat_leases.expires_at <= ? RETURNING lease_id",
+  ).bind(githubUserId, leaseId, expiresAt, now).first<{ lease_id: string }>();
+  if (row?.lease_id !== leaseId) throw new WebApiError(429, "chat_already_running");
+  return leaseId;
+}
+
+async function releaseChatLease(db: D1Database, githubUserId: string, leaseId: string): Promise<void> {
+  await db.prepare("DELETE FROM web_chat_leases WHERE github_user_id = ? AND lease_id = ?").bind(githubUserId, leaseId).run();
+}
+
+async function executeVaultAgent(
+  env: Env,
+  vaultId: string,
+  session: WebSession,
+  request: z.infer<typeof chatSchema>,
+  signal: AbortSignal,
+  deadline: number,
+  onProgress?: (event: AgentProgressEvent) => void | Promise<void>,
+): Promise<VaultAgentResult> {
+  try {
+    signal.throwIfAborted();
+    const vault = await resolveAuthorizedVault(env, vaultId, signal);
+    signal.throwIfAborted();
+    const toolbox = await VaultAgentToolbox.create(env, vault, request.scope, request.activePath, request.pathPrefix, signal);
+    signal.throwIfAborted();
+    return await runVaultAgent({
+      apiKey: env.OPENAI_API_KEY ?? "",
+      model: request.model,
+      reasoningEffort: request.reasoning_effort,
+      question: request.question,
+      history: request.history,
+      scope: request.scope,
+      activePath: request.activePath,
+      safetyIdentifier: await hashedSafetyIdentifier(session.githubUserId),
+      toolbox,
+      signal,
+      deadline,
+      onProgress,
+    });
+  } catch (error) {
+    if (signal.aborted && !(error instanceof VaultAgentProviderError)) {
+      throw signal.reason instanceof DOMException && signal.reason.name === "TimeoutError"
+        ? new VaultAgentProviderError("agent_timeout", 504)
+        : new VaultAgentProviderError("agent_cancelled", 408);
+    }
+    throw error;
+  }
+}
+
+function agentReply(result: VaultAgentResult) {
+  const citations = result.citations.map((source, index) => ({ id: `S${index + 1}`, path: source.path, sha: source.sha }));
+  const inspected = [...new Map(result.trace.flatMap((event) => event.notes).map((note) => [`${note.path}\0${note.sha}`, note])).values()];
+  return {
+    answer: result.answer,
+    citations,
+    trace: result.trace,
+    context: { note_count: inspected.length, revision: result.revision },
+    usage: result.usage,
+    agent: { model: result.model, reasoning_effort: result.reasoningEffort, tool_calls: result.trace.length, model_requests: result.usage.requests },
+  };
+}
+
+function agentStreamError(error: unknown): { error: string; status: number } {
+  if (error instanceof WebApiError || error instanceof VaultAgentProviderError) return { error: error.code, status: error.status };
+  console.error(JSON.stringify({ type: "web_chat_stream.failed", error: safeError(error) }));
+  return { error: "request_failed", status: 500 };
 }
 
 function boundedInteger(value: string | undefined, fallback: number, minimum: number, maximum: number): number {

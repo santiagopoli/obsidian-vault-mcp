@@ -30,6 +30,9 @@ GitHub OAuth identifies the owner. It does not grant repository access to the Wo
 - Browser sessions store only a SHA-256 token hash, expire after eight hours, and require exact-origin CSRF validation for chat and logout.
 - Portal vault IDs are immutable GitHub repository IDs but are resolved against the owner allowlist again on every request.
 - Chat has no write tools or outbound capabilities; note text is untrusted evidence and citations are server-validated.
+- Each agent toolbox is constructed for one authorized vault, immutable Git revision, and selected scope. Tool arguments cannot widen any of those boundaries.
+- Agent activity exposes tool metadata and exact note paths/SHAs, but never note bodies, secrets, model chain-of-thought, or encrypted reasoning.
+- Per-owner daily quotas, a single fenced in-flight lease extending beyond the absolute turn deadline, browser cancellation propagated through GitHub and model calls, and cumulative per-turn token ceilings bound accidental or abusive spend.
 
 The allowlist and token restriction are independent controls. A mistake in either one should not expose a repository outside the other.
 
@@ -37,7 +40,7 @@ The allowlist and token restriction are independent controls. A mistake in eithe
 
 Cloudflare KV stores OAuth provider state and grants. The provider hashes token material and encrypts grant properties. D1 stores one-time consent state, webhook delivery metadata, vault checkpoints, derived note events, and automation run status. The graph cache may temporarily contain derived private metadata—paths, titles, aliases, tags, and edges—keyed by repository and immutable tree revision. Raw note contents and raw webhook bodies are not persisted in KV, D1, or the graph cache.
 
-D1 also stores browser-session hashes, CSRF values, expiry metadata, and daily chat counters. Portal chat history is browser-memory-only. Prompts, retrieved note bodies, and model answers are not persisted by this service. Responses API calls set `store: false`; deployments must still disclose the provider's applicable abuse-monitoring retention.
+D1 also stores browser-session hashes, CSRF values, expiry metadata, and daily chat counters. Portal chat history, activity, and token totals are browser-memory-only. Prompts, retrieved note bodies, model answers, and activity traces are not persisted by this service. Responses API calls set `store: false`; deployments must still disclose the provider's applicable abuse-monitoring retention.
 
 Deployments handling unusually sensitive metadata can disable or shorten graph caching in `loadVaultGraph`.
 
