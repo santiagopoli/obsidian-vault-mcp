@@ -15,6 +15,20 @@ afterEach(async () => {
 });
 
 describe("production configuration renderer", () => {
+  it("wires every required renderer input without referencing reserved GitHub variables", async () => {
+    const [renderer, workflow] = await Promise.all([
+      readFile(resolve(repositoryRoot, "scripts/render-production-config.mjs"), "utf8"),
+      readFile(resolve(repositoryRoot, ".github/workflows/deploy.yml"), "utf8"),
+    ]);
+    const requiredInputs = [...renderer.matchAll(/required\("([A-Z0-9_]+)"\)/g)].map((match) => match[1]);
+
+    expect(requiredInputs.length).toBeGreaterThan(0);
+    expect(workflow).not.toMatch(/\$\{\{\s*vars\.GITHUB_/);
+    for (const input of requiredInputs) {
+      expect(workflow).toMatch(new RegExp(`^\\s+${input}:\\s+\\$\\{\\{\\s+(?:vars|secrets)\\.[A-Z0-9_]+\\s*\\}\\}\\s*$`, "m"));
+    }
+  });
+
   it("wires the Google client, encrypted credential secrets, and sync migration into production", async () => {
     const workingDirectory = await mkdtemp(resolve(tmpdir(), "obsidian-production-config-"));
     temporaryDirectories.push(workingDirectory);
