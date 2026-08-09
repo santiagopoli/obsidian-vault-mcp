@@ -42,6 +42,7 @@ jobs:
           OPENAI_CHAT_MODEL: ${{ vars.OPENAI_CHAT_MODEL }}
           WEB_CHAT_ENABLED: ${{ vars.WEB_CHAT_ENABLED }}
           WEB_CHAT_DAILY_LIMIT: ${{ vars.WEB_CHAT_DAILY_LIMIT }}
+          GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
           EVENT_D1_DATABASE_ID: ${{ vars.EVENT_D1_DATABASE_ID }}
           EVENT_QUEUE_NAME: ${{ vars.EVENT_QUEUE_NAME }}
           EVENT_DLQ_NAME: ${{ vars.EVENT_DLQ_NAME }}
@@ -60,3 +61,7 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           packageManager: bun
           command: deploy --config .wrangler/production.jsonc
+      - name: Verify production health
+        run: bun run verify:production
+        env:
+          PRODUCTION_ORIGIN: ${{ vars.PRODUCTION_ORIGIN }}

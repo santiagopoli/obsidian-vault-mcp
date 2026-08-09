@@ -2,7 +2,7 @@
 
 A self-hosted Model Context Protocol server for private Obsidian vaults stored in GitHub. It runs on Cloudflare Workers, authenticates the vault owner with OAuth 2.1, and exposes Markdown notes, an Obsidian-compatible link graph, and a durable event stream for vault automations.
 
-The same Worker also serves an optional private web portal with a vault switcher, Markdown reader, content search, and an ephemeral read-only AI chat with verified note citations.
+The same Worker also serves an optional private web portal with a vault switcher, Markdown reader, content search, an ephemeral read-only AI chat with verified note citations, and callback-driven vault snapshots to Google Drive.
 
 The server does not run Obsidian. It derives links, backlinks, aliases, tags, embeds, unresolved references, and shortest paths from an immutable GitHub tree snapshot.
 
@@ -66,6 +66,12 @@ bunx wrangler secret put OPENAI_API_KEY
 
 See [Web portal and vault chat](docs/web-portal.md) for the API, privacy model, and current multi-user boundary.
 
+## Vault sync callbacks
+
+The portal can connect a selected vault to Google Drive. GitHub remains canonical: every detected revision queues a coalesced internal callback that uploads a complete repository ZIP (notes, attachments, and `.obsidian` settings) into an app-created Drive folder. The integration requests only the non-sensitive `drive.file` scope, so it cannot browse unrelated Drive content.
+
+Set `GOOGLE_CLIENT_ID` as a Worker variable and upload `GOOGLE_CLIENT_SECRET` plus a random 32-byte `SYNC_CREDENTIALS_KEY` as Worker secrets. Register `https://your-host/api/sync/google/callback` as the exact Google OAuth redirect URI. See [Vault sync destinations](docs/vault-sync.md) for setup, encryption, retries, and the iCloud boundary.
+
 ## Development
 
 ```sh
@@ -85,7 +91,7 @@ For local Worker development, `bun run dev` builds the portal and applies local 
 - Hidden paths and non-Markdown files are never exposed as notes.
 - Writes create Git commits; rename and delete operations are intentionally unavailable.
 - GitHub is canonical: pushes made by Obsidian, the MCP, GitHub's UI, or another Git client produce the same events.
-- Automation handlers are internal and explicitly configured; `summarize-note` writes only managed summaries and arbitrary outbound callback URLs are not supported yet.
+- Automation handlers are internal and explicitly configured; `summarize-note` writes only managed summaries, while authenticated sync destinations reuse the durable callback queue. Arbitrary outbound callback URLs are not supported.
 - One repository receives immediate webhook delivery per deployment; every allowlisted vault is still reconciled on the fifteen-minute schedule.
 
 See [Vault events and automations](docs/automations.md) for delivery, filtering, retries, and the write-loop policy.

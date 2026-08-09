@@ -36,6 +36,45 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .account { padding: 0 18px; justify-self: end; display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 12px; }
 .text-button { border: 0; background: transparent; padding: 7px 0; color: var(--ink); cursor: pointer; font-weight: 600; }
 
+.sync-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 20px; background: #16131b99; backdrop-filter: blur(8px); }
+.sync-dialog { width: min(600px, 100%); max-height: min(760px, calc(100vh - 40px)); overflow: auto; padding: 24px; border: 1px solid #d9d4e2; border-radius: 16px; background: var(--paper); box-shadow: 0 30px 90px #17111f55; }
+.sync-heading { display: flex; justify-content: space-between; align-items: flex-start; }
+.sync-heading h2 { margin: 5px 0 0; font: 500 34px/1 var(--serif); }
+.sync-heading > button { border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 25px; }
+.sync-intro, .sync-security { color: var(--muted); font-size: 12px; line-height: 1.65; }
+.sync-intro { margin: 18px 0; }
+.sync-security { margin: 18px 2px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 10px; }
+.sync-feedback { margin: 0 0 14px; padding: 10px 12px; border: 1px solid; border-radius: 9px; font-size: 11px; line-height: 1.5; }
+.sync-feedback.success { border-color: #b9ddc1; background: #edf8ef; color: #286637; }
+.sync-feedback.info { border-color: #cfc5eb; background: #f2eefc; color: #533e91; }
+.sync-feedback.error { border-color: #edc5be; background: #fff2ef; color: #7a3027; }
+.sync-loading { padding: 28px; color: var(--muted); text-align: center; }
+.sync-provider, .sync-destination { position: relative; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px; margin-top: 10px; padding: 15px; border: 1px solid var(--line); border-radius: 11px; background: white; }
+.sync-provider strong, .sync-destination strong { font-size: 13px; }
+.sync-provider p, .sync-destination p { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.sync-provider > button, .sync-actions button { border: 0; border-radius: 7px; padding: 8px 11px; background: var(--dark); color: white; cursor: pointer; font-size: 10px; font-weight: 600; }
+.sync-provider > button:disabled, .sync-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.sync-provider > small { grid-column: 2 / -1; color: #8b5d22; font-size: 9px; }
+.sync-provider.unavailable { opacity: .72; }
+.sync-provider.unavailable > span { color: var(--muted); font: 500 9px var(--mono); text-transform: uppercase; }
+.provider-mark { display: grid; place-items: center; width: 35px; height: 35px; border-radius: 9px; font: 700 17px var(--mono); }
+.provider-mark.google { color: #4285f4; background: #edf3ff; }
+.provider-mark.apple { color: #333; background: #eee; }
+.sync-destination { display: block; }
+.sync-destination-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sync-destination-heading > div { display: grid; gap: 3px; }
+.sync-connection { color: #386843; font: 500 8px var(--mono); text-transform: uppercase; letter-spacing: .04em; }
+.sync-connection.reauthorization_required { color: #88590d; }
+.sync-connection.disabled { color: var(--muted); }
+.sync-destination > small { display: block; margin-top: 7px; color: #8a3a31; font: 9px var(--mono); }
+.sync-status { border-radius: 99px; padding: 4px 7px; background: #e7f7ea; color: #286637; font: 600 8px var(--mono); text-transform: uppercase; }
+.sync-status.warning { background: #fff0d8; color: #88590d; }
+.sync-status.error { background: #fbe5e2; color: #853c33; }
+.sync-status.pending { background: #eee9fb; color: #60469f; }
+.sync-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start !important; gap: 8px; margin-top: 13px; }
+.sync-actions a { margin-right: auto; color: var(--accent); font-size: 10px; font-weight: 600; text-decoration: none; }
+.sync-actions button.danger { color: #79342d; background: #f8e9e7; }
+
 .error-banner { position: fixed; z-index: 30; top: 76px; left: 50%; transform: translateX(-50%); display: flex; gap: 18px; align-items: center; max-width: min(620px, calc(100vw - 32px)); padding: 11px 14px; color: #6b241b; background: #fff2ef; border: 1px solid #edc5be; border-radius: 9px; box-shadow: 0 12px 40px #2e17131c; font-size: 13px; }
 .error-banner button { border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 18px; }
 
@@ -242,6 +281,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .signin { grid-template-columns: 1fr; }
   .signin-card { min-height: 100vh; padding: 42px 28px; }
   .signin-art { display: none; }
+}
+
+@media (max-width: 480px) {
+  .sync-backdrop { padding: 10px; }
+  .sync-dialog { max-height: calc(100dvh - 20px); padding: 18px; }
+  .sync-heading h2 { font-size: 30px; }
+  .sync-provider { grid-template-columns: auto minmax(0, 1fr); }
+  .sync-provider > button, .sync-provider > span { grid-column: 2; justify-self: start; }
+  .sync-actions a { width: 100%; margin: 0 0 2px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

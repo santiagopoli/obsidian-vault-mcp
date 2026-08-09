@@ -92,6 +92,7 @@ Edit these non-secret values:
 - `GITHUB_WEBHOOK_REPOSITORY_ID`: the immutable numeric repository ID (`gh api repos/OWNER/REPOSITORY --jq .id`).
 - `GITHUB_WEBHOOK_DEFAULT_BRANCH`: normally `main`.
 - `GITHUB_WEBHOOK_VAULT`: the matching `owner/repository` allowlist entry.
+- `GOOGLE_CLIENT_ID`: optional public OAuth client ID when enabling Google Drive sync.
 
 Leave `GITHUB_WEBHOOK_HOOK_ID` as a temporary positive number until the webhook is created in step 7. Keep the four default Queue names unless they conflict with existing resources in your account.
 
@@ -112,6 +113,9 @@ GITHUB_CLIENT_ID=...
 GITHUB_CLIENT_SECRET=...
 GITHUB_VAULT_TOKEN=...
 GITHUB_WEBHOOK_SECRET=...
+# Optional Google Drive sync secrets:
+GOOGLE_CLIENT_SECRET=...
+SYNC_CREDENTIALS_KEY=...
 ```
 
 Generate `GITHUB_WEBHOOK_SECRET` with a cryptographically secure password generator. Do not reuse the OAuth client secret or repository token.
@@ -122,11 +126,14 @@ Apply the D1 schema, then deploy the code and encrypted secrets:
 bunx wrangler d1 migrations apply obsidian-vault-events --remote --config wrangler.jsonc
 bun run web:build
 bunx wrangler deploy --config wrangler.jsonc --secrets-file .env.production
+PRODUCTION_ORIGIN=https://YOUR-ORIGIN bun run verify:production
 ```
 
 Delete `.env.production` after the deployment. Future code deployments preserve existing Cloudflare secrets.
 
 To enable the portal chat, upload `OPENAI_API_KEY`; chat enables automatically when the secret exists. Optionally set `WEB_CHAT_ENABLED=false` to disable it, or `true` to make a missing secret fail the health check. `OPENAI_CHAT_MODEL` chooses the initial model from `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`; the browser can select any allowlisted model and reasoning level per conversation. `WEB_CHAT_DAILY_LIMIT` remains optional.
+
+To enable Google Drive sync, follow [Vault sync destinations](vault-sync.md), register the exact `/api/sync/google/callback` redirect URI, set `GOOGLE_CLIENT_ID`, and upload both Google sync secrets. `/healthz` rejects partial configuration, malformed encryption keys, or a missing sync migration.
 
 ## 7. Create and verify the GitHub webhook
 
@@ -162,6 +169,7 @@ Test in this order:
 3. Inspect the graph.
 4. In write mode, update a disposable note using its current SHA.
 5. Push a disposable note change and inspect it with `obsidian_list_events`.
+6. When Drive sync is enabled, complete the [first-sync verification](vault-sync.md#verify-the-first-sync).
 
 ## 9. Automatic deployment from GitHub
 
@@ -172,11 +180,11 @@ In the existing Worker's **Settings → Build**, connect the Cloudflare GitHub A
 Use these commands:
 
 - Build: `bun install --frozen-lockfile && bun run check`
-- Deploy: `bun run config:production && bunx wrangler d1 migrations apply obsidian-vault-events --remote --config .wrangler/production.jsonc && bunx wrangler deploy --config .wrangler/production.jsonc`
+- Deploy: `bun run config:production && bunx wrangler d1 migrations apply obsidian-vault-events --remote --config .wrangler/production.jsonc && bunx wrangler deploy --config .wrangler/production.jsonc && bun run verify:production`
 
 Add the non-secret deployment values listed below as Cloudflare build variables. Workers Builds creates and manages its deployment credential; runtime GitHub credentials remain separate Worker secrets. A push to `main` now runs all checks before deployment. When `summarize-note` is enabled, verify after deployment that `OPENAI_API_KEY` exists as a Worker secret; Wrangler's `secrets.required` metadata does not upload or verify remote secret values.
 
-Required build variables are `ALLOWED_GITHUB_USER_ID`, `VAULT_REPOSITORIES`, `OAUTH_KV_NAMESPACE_ID`, `GITHUB_WEBHOOK_HOOK_ID`, `GITHUB_WEBHOOK_REPOSITORY_ID`, `GITHUB_WEBHOOK_DEFAULT_BRANCH`, `GITHUB_WEBHOOK_VAULT`, and `EVENT_D1_DATABASE_ID`. `WORKER_NAME`, `VAULT_ACCESS`, `OMIT_AUTHORIZATION_RESPONSE_ISS`, and all four Queue names have safe defaults. Add `CUSTOM_DOMAIN` when applicable and `AUTOMATIONS_YAML` when enabling handlers.
+Required build variables are `ALLOWED_GITHUB_USER_ID`, `VAULT_REPOSITORIES`, `OAUTH_KV_NAMESPACE_ID`, `GITHUB_WEBHOOK_HOOK_ID`, `GITHUB_WEBHOOK_REPOSITORY_ID`, `GITHUB_WEBHOOK_DEFAULT_BRANCH`, `GITHUB_WEBHOOK_VAULT`, `EVENT_D1_DATABASE_ID`, and `PRODUCTION_ORIGIN`. The production origin is the exact HTTPS origin used for the post-deploy health smoke, without a path or trailing slash. `WORKER_NAME`, `VAULT_ACCESS`, `OMIT_AUTHORIZATION_RESPONSE_ISS`, and all four Queue names have safe defaults. Add `CUSTOM_DOMAIN` when applicable, `AUTOMATIONS_YAML` when enabling handlers, and `GOOGLE_CLIENT_ID` when enabling Drive sync. Google and sync runtime secrets must already exist in Cloudflare; `secrets.required` metadata does not upload them.
 
 ### GitHub Actions alternative
 
@@ -186,6 +194,8 @@ Create a protected GitHub Environment named `production`. Add these repository o
 
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
+
+Runtime application secrets such as `GOOGLE_CLIENT_SECRET` and `SYNC_CREDENTIALS_KEY` stay in Cloudflare Worker secrets, not GitHub Actions.
 
 Create a narrowly scoped Cloudflare API token with these policies:
 
@@ -211,11 +221,13 @@ Add these GitHub Actions variables:
 - `GITHUB_WEBHOOK_DEFAULT_BRANCH`
 - `GITHUB_WEBHOOK_VAULT`
 - `EVENT_D1_DATABASE_ID`
+- `PRODUCTION_ORIGIN` — exact HTTPS origin, for example `https://notes.example.com`; required by the post-deploy smoke.
 - `EVENT_QUEUE_NAME`
 - `EVENT_DLQ_NAME`
 - `AUTOMATION_QUEUE_NAME`
 - `AUTOMATION_DLQ_NAME`
 - `AUTOMATIONS_YAML` — optional; defaults to no automations.
+- `GOOGLE_CLIENT_ID` — optional; required with the two Cloudflare sync secrets.
 
 The workflow generates a private Wrangler file during the job, repeats every check, and deploys only from `main` or a manual dispatch. Runtime GitHub credentials remain only in Cloudflare.
 
@@ -237,5 +249,8 @@ The scheduled reconciler watches every allowlisted vault. The current webhook po
 - Rotate `GITHUB_VAULT_TOKEN` with `wrangler secret put GITHUB_VAULT_TOKEN`.
 - Rotate the OAuth client secret with `wrangler secret put GITHUB_CLIENT_SECRET`.
 - Rotate the webhook secret in GitHub and Cloudflare together with `wrangler secret put GITHUB_WEBHOOK_SECRET`.
+- Rotate `GOOGLE_CLIENT_SECRET` in Google and Cloudflare together. Existing refresh tokens normally remain valid.
+- Rotating or losing `SYNC_CREDENTIALS_KEY` makes existing destination tokens unreadable; reconnect every Drive destination after replacing it.
+- Disconnecting preserves the Drive copy. Revoke the OAuth grant separately in the Google Account security page when full provider revocation is required.
 - Revoke an MCP client by removing its OAuth grant from KV or rotating the OAuth state namespace.
 - Disable writes immediately by changing `VAULT_ACCESS` to `read` and deploying; the write tool disappears.

@@ -15,7 +15,8 @@
     "web:build": "vite build --config web/vite.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "bun run typecheck && bun run web:typecheck && bun test && bun run web:build && bun run audit && bun run dry-run",
+    "check": "bun run typecheck && bun run web:typecheck && bun run test && bun run web:build && bun run audit && bun run dry-run",
+    "verify:production": "bun scripts/verify-production.mjs",
     "audit": "bun audit --production",
     "dry-run": "wrangler deploy --dry-run --config wrangler.example.jsonc --outdir .wrangler/dry-run",
     "types": "wrangler types worker-configuration.d.ts --include-runtime false"

@@ -20,6 +20,7 @@ import {
   secureEquals,
 } from "./webSession";
 import type { AuthProps, Env } from "./types";
+import { validateCredentialCipherKey } from "./credentialCipher";
 
 const authStatePrefix = "github-oauth-state:";
 const stateTtlSeconds = 600;
@@ -246,6 +247,11 @@ app.get("/healthz", async (context) => {
   if (webChatEnabled(context.env) && !context.env.OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY is required when WEB_CHAT_ENABLED=true");
   }
+  const googleSyncSettings = [context.env.GOOGLE_CLIENT_ID, context.env.GOOGLE_CLIENT_SECRET, context.env.SYNC_CREDENTIALS_KEY];
+  if (googleSyncSettings.some(Boolean) && !googleSyncSettings.every(Boolean)) {
+    throw new Error("Google Drive sync requires GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and SYNC_CREDENTIALS_KEY together");
+  }
+  if (context.env.SYNC_CREDENTIALS_KEY) validateCredentialCipherKey(context.env.SYNC_CREDENTIALS_KEY);
   if (!context.env.AUTOMATIONS_QUEUE || typeof context.env.AUTOMATIONS_QUEUE.send !== "function") {
     throw new Error("AUTOMATIONS_QUEUE binding is required");
   }
@@ -257,6 +263,8 @@ app.get("/healthz", async (context) => {
   await context.env.EVENT_DB.prepare("SELECT 1 FROM web_chat_leases LIMIT 1").first();
   await context.env.EVENT_DB.prepare("SELECT 1 FROM web_vault_registry LIMIT 1").first();
   await context.env.EVENT_DB.prepare("SELECT 1 FROM mcp_consent_states LIMIT 1").first();
+  await context.env.EVENT_DB.prepare("SELECT 1 FROM vault_sync_destinations LIMIT 1").first();
+  await context.env.EVENT_DB.prepare("SELECT 1 FROM vault_sync_oauth_states LIMIT 1").first();
   if (!context.env.ASSETS || typeof context.env.ASSETS.fetch !== "function") throw new Error("ASSETS binding is required");
   return context.json({ ok: true, service: "obsidian-vault-mcp" });
 });

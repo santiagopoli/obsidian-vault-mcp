@@ -20,6 +20,7 @@ const webhookVault = required("GITHUB_WEBHOOK_VAULT");
 const openAiChatModel = optional("OPENAI_CHAT_MODEL") ?? "gpt-5.6-sol";
 const webChatEnabled = optional("WEB_CHAT_ENABLED");
 const webChatDailyLimit = optional("WEB_CHAT_DAILY_LIMIT") ?? "50";
+const googleClientId = optional("GOOGLE_CLIENT_ID");
 const automationsYamlValue = optional("AUTOMATIONS_YAML");
 const automationsFile = optional("AUTOMATIONS_FILE");
 if (automationsYamlValue && automationsFile) fail("Set either AUTOMATIONS_YAML or AUTOMATIONS_FILE, not both");
@@ -90,6 +91,7 @@ const config = {
     OPENAI_CHAT_MODEL: openAiChatModel,
     ...(webChatEnabled ? { WEB_CHAT_ENABLED: webChatEnabled } : {}),
     WEB_CHAT_DAILY_LIMIT: webChatDailyLimit,
+    ...(googleClientId ? { GOOGLE_CLIENT_ID: googleClientId } : {}),
     AUTOMATIONS_YAML: automationsYaml,
   },
   assets: {
@@ -106,6 +108,7 @@ const config = {
       ...(webChatEnabled === "true" || automationConfig.automations.some((automation) => automation.target.handler === "summarize-note")
         ? ["OPENAI_API_KEY"]
         : []),
+      ...(googleClientId ? ["GOOGLE_CLIENT_SECRET", "SYNC_CREDENTIALS_KEY"] : []),
     ],
   },
   kv_namespaces: [{ binding: "OAUTH_KV", id: oauthKvNamespaceId }],

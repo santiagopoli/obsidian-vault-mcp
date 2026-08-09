@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Miniflare } from "miniflare";
 import webPortalMigration from "../migrations/0003_web_portal.sql?raw";
 import webChatLeasesMigration from "../migrations/0004_web_chat_leases.sql?raw";
+import vaultSyncMigration from "../migrations/0005_vault_sync.sql?raw";
 import {
   consumeWebAuthState,
   cleanupWebPortalState,
@@ -24,7 +25,7 @@ describe("web portal sessions", () => {
       d1Databases: ["EVENT_DB"],
     });
     db = await runtime.getD1Database("EVENT_DB");
-    for (const statement of `${webPortalMigration}\n${webChatLeasesMigration}`.split(";").map((sql) => sql.trim()).filter(Boolean)) {
+    for (const statement of `${webPortalMigration}\n${webChatLeasesMigration}\n${vaultSyncMigration}`.split(";").map((sql) => sql.trim()).filter(Boolean)) {
       await db.prepare(statement).run();
     }
   });
