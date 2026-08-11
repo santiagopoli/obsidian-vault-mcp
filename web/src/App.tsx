@@ -33,7 +33,8 @@ import { buildNoteTree, type NoteTreeNode } from "./noteTree";
 import { markdownLinkTarget, prepareObsidianMarkdown, resolveInternalNotePath } from "./obsidianMarkdown";
 import { GraphExplorer } from "./GraphExplorer";
 import { appRouteHref, parseAppRoute, vaultIdFromHref, type AppRoute } from "./navigation";
-import { MAX_NOTE_MENTIONS, activeNoteMention, extractMentionedPaths, insertNoteMention, suggestNoteMentions } from "./noteMentions";
+import { MAX_NOTE_MENTIONS, extractMentionedPaths } from "./noteMentions";
+import { MentionEditor } from "./MentionEditor";
 
 type ChatMessage = {
   id: string;
@@ -78,8 +79,6 @@ export function App() {
   const [loadingNote, setLoadingNote] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [question, setQuestion] = useState("");
-  const [mentionCaret, setMentionCaret] = useState<number | null>(null);
-  const [mentionIndex, setMentionIndex] = useState(0);
   const [chatScope, setChatScope] = useState<"note" | "vault">("vault");
   const [chatModel, setChatModel] = useState<ChatModelId>("gpt-5.6-sol");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
@@ -99,7 +98,6 @@ export function App() {
   const syncTriggerRef = useRef<HTMLButtonElement>(null);
   const syncDialogRef = useRef<HTMLElement>(null);
   const syncCloseRef = useRef<HTMLButtonElement>(null);
-  const questionRef = useRef<HTMLTextAreaElement>(null);
   const routeRef = useRef(route);
   vaultIdRef.current = vaultId;
   routeRef.current = route;
@@ -300,7 +298,6 @@ export function App() {
     setPendingActivity(undefined);
     setMessages([]);
     setQuestion(contextQuestionRef.current ?? "");
-    setMentionCaret(null);
     contextQuestionRef.current = undefined;
   }, [chatContextKey]);
 
@@ -309,13 +306,6 @@ export function App() {
   const currentVault = vaults.find((vault) => vault.id === vaultId);
   const conversationUsage = useMemo(() => sumUsage(messages.flatMap((message) => message.usage ? [message.usage] : [])), [messages]);
   const mentionedPaths = useMemo(() => extractMentionedPaths(question), [question]);
-  const activeMention = useMemo(() => mentionCaret === null ? undefined : activeNoteMention(question, mentionCaret), [mentionCaret, question]);
-  const mentionSuggestions = useMemo(
-    () => activeMention ? suggestNoteMentions(notes, activeMention.query, mentionedPaths) : [],
-    [activeMention, mentionedPaths, notes],
-  );
-
-  useEffect(() => { setMentionIndex(0); }, [activeMention?.query]);
 
   async function submitSearch(event: FormEvent) {
     event.preventDefault();
@@ -344,7 +334,6 @@ export function App() {
     const history = messages.filter((message) => !message.failed).slice(-8).map(({ role, content }) => ({ role, content }));
     setMessages((current) => [...current, nextUser]);
     setQuestion("");
-    setMentionCaret(null);
     setAsking(true);
     setPendingActivity({ phase: "Preparing vault snapshot…", trace: [], usage: emptyUsage() });
     setError(undefined);
@@ -507,43 +496,10 @@ export function App() {
     });
   }
 
-  function updateQuestion(value: string, caret: number | null) {
-    setQuestion(value);
-    setMentionCaret(caret ?? value.length);
-  }
-
-  function chooseMention(path: string) {
-    if (!activeMention) return;
-    const inserted = insertNoteMention(question, activeMention, path);
-    setQuestion(inserted.value);
-    setMentionCaret(inserted.caret);
-    setMentionIndex(0);
+  function mentionAdded(nextValue: string) {
     if (chatScope !== "vault") {
-      contextQuestionRef.current = inserted.value;
+      contextQuestionRef.current = nextValue;
       setChatScope("vault");
-    }
-    requestAnimationFrame(() => {
-      questionRef.current?.focus();
-      questionRef.current?.setSelectionRange(inserted.caret, inserted.caret);
-    });
-  }
-
-  function handleQuestionKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.nativeEvent.isComposing) return;
-    if (!activeMention || mentionSuggestions.length === 0) return;
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setMentionIndex((current) => (current + 1) % mentionSuggestions.length);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      setMentionIndex((current) => (current - 1 + mentionSuggestions.length) % mentionSuggestions.length);
-    } else if (event.key === "Enter" || event.key === "Tab") {
-      event.preventDefault();
-      const selectedMention = mentionSuggestions[mentionIndex];
-      if (selectedMention) chooseMention(selectedMention.path);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      setMentionCaret(null);
     }
   }
 
@@ -644,7 +600,7 @@ export function App() {
             <label>Reasoning<select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)} disabled={asking}>
               {session.chat.reasoning_efforts.map((effort) => <option key={effort} value={effort}>{reasoningLabel(effort)}</option>)}
             </select></label>
-            <button className="new-chat" onClick={() => { chatAbortRef.current?.abort(); setMessages([]); setQuestion(""); setMentionCaret(null); setPendingActivity(undefined); setAsking(false); }} disabled={!asking && messages.length === 0}>New chat</button>
+            <button className="new-chat" onClick={() => { chatAbortRef.current?.abort(); setMessages([]); setQuestion(""); setPendingActivity(undefined); setAsking(false); }} disabled={!asking && messages.length === 0}>New chat</button>
           </div>
           <div className="conversation-meter" aria-label={`${formatTokens(conversationUsage.totalTokens)} tokens used in this conversation`}>
             <span>{formatTokens(conversationUsage.totalTokens)} tokens</span><span>{conversationUsage.requests} model call{conversationUsage.requests === 1 ? "" : "s"}</span>
@@ -687,19 +643,7 @@ export function App() {
           </div>
           <form className="composer" onSubmit={submitQuestion}>
             <label className="sr-only" htmlFor="vault-question">Question for your vault</label>
-            {activeMention && <div id="note-mention-options" className="mention-menu" role="listbox" aria-label="Mention a note">
-              {mentionSuggestions.map((suggestion, index) => <button
-                id={`note-mention-option-${index}`}
-                type="button"
-                role="option"
-                aria-selected={index === mentionIndex}
-                className={index === mentionIndex ? "active" : ""}
-                key={suggestion.path}
-                onMouseDown={(event) => { event.preventDefault(); chooseMention(suggestion.path); }}
-              ><strong>{basename(suggestion.path)}</strong><span>{dirname(suggestion.path)}</span></button>)}
-              {mentionSuggestions.length === 0 && <p>{mentionedPaths.length >= MAX_NOTE_MENTIONS ? `You can mention up to ${MAX_NOTE_MENTIONS} notes.` : "No matching note"}</p>}
-            </div>}
-            <textarea ref={questionRef} id="vault-question" role="combobox" value={question} onChange={(event) => updateQuestion(event.target.value, event.target.selectionStart)} onSelect={(event) => setMentionCaret(event.currentTarget.selectionStart)} onBlur={() => setMentionCaret(null)} onKeyDown={handleQuestionKeyDown} placeholder={session.chat_enabled ? "Ask a question or type @ to mention a note…" : "Chat is disabled"} disabled={!session.chat_enabled} maxLength={4000} rows={3} aria-autocomplete="list" aria-haspopup="listbox" aria-expanded={Boolean(activeMention)} aria-controls={activeMention ? "note-mention-options" : undefined} aria-activedescendant={activeMention && mentionSuggestions.length > 0 ? `note-mention-option-${mentionIndex}` : undefined} />
+            <MentionEditor value={question} notes={notes} disabled={!session.chat_enabled} maxLength={4000} placeholder={session.chat_enabled ? "Ask a question or type @ to mention a note…" : "Chat is disabled"} noteHref={(path) => appRouteHref({ view: "note", path }, vaultId)} onChange={setQuestion} onMentionAdded={mentionAdded} onOpenNote={openNote} />
             <div className="composer-footer"><span>{mentionedPaths.length > 0 ? `${mentionedPaths.length} note${mentionedPaths.length === 1 ? "" : "s"} mentioned · Entire vault` : chatScope === "note" ? "This note only" : "Searches this vault"}</span><button aria-label="Send question" disabled={!session.chat_enabled || asking || !question.trim() || mentionedPaths.length > MAX_NOTE_MENTIONS || (chatScope === "note" && !selectedPath)}>↑</button></div>
           </form>
           <p className="privacy-note">Chat is ephemeral. Answers may be wrong; verify citations.</p>
