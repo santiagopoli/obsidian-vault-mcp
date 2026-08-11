@@ -285,11 +285,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .mention-editor { width: 100%; min-height: 72px; max-height: min(35dvh, 240px); overflow-x: hidden; overflow-y: auto; border: 0; outline: 0; color: var(--ink); background: transparent; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.8; }
 .mention-editor:empty::before { content: attr(data-placeholder); color: #99938b; pointer-events: none; }
 .mention-editor[aria-disabled="true"] { cursor: not-allowed; opacity: .55; }
-.mention-chip { display: inline-flex; align-items: center; max-width: min(210px, 70%); min-height: 25px; margin: 1px 2px; overflow: hidden; vertical-align: -.45em; border: 1px solid #d8d0ee; border-radius: 6px; background: #f7f3ff; color: #55486e; font: 600 10px/1.2 Inter, ui-sans-serif, system-ui, sans-serif; cursor: default; }
+.mention-chip { display: inline-flex; align-items: baseline; max-width: min(210px, 70%); margin: 0 2px; vertical-align: baseline; border: 1px solid #d8d0ee; border-radius: 6px; background: #f7f3ff; color: #55486e; font: inherit; font-weight: 600; line-height: inherit; cursor: default; }
 .mention-chip:hover { border-color: #bfb1e5; background: #f0eafd; }
 .mention-chip:focus { outline: 2px solid #7657d5; outline-offset: 1px; }
-.mention-chip-label { min-width: 0; overflow: hidden; padding: 5px 6px 5px 7px; text-overflow: ellipsis; white-space: nowrap; }
-.mention-chip-toggle { align-self: stretch; width: 23px; flex: 0 0 23px; border: 0; border-left: 1px solid #ddd4ef; background: transparent; color: #6e5da1; cursor: pointer; font-size: 12px; line-height: 1; }
+.mention-chip-label { min-width: 0; overflow: hidden; padding: 1px 6px 1px 7px; text-overflow: ellipsis; white-space: nowrap; }
+.mention-chip-toggle { align-self: stretch; width: 23px; flex: 0 0 23px; border: 0; border-left: 1px solid #ddd4ef; background: transparent; color: #6e5da1; cursor: pointer; font: inherit; line-height: inherit; }
 .mention-chip-toggle:hover { background: #e7dffc; }
 .mention-chip-menu { position: absolute; z-index: 50; display: grid; width: 180px; overflow: hidden; border: 1px solid #d8d0ee; border-radius: 9px; background: #fff; box-shadow: 0 14px 38px #271d3b2b; }
 .mention-chip-menu.above { transform: translateY(-100%); }
