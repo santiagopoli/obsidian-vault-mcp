@@ -37,7 +37,6 @@ export function MentionEditor({ value, notes, disabled, maxLength, placeholder, 
   const editorRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const chipMenuRef = useRef<HTMLDivElement>(null);
-  const renderedPathsRef = useRef<ReadonlySet<string>>(new Set());
   const [editorValue, setEditorValue] = useState(value);
   const [mentionCaret, setMentionCaret] = useState<number | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -58,9 +57,7 @@ export function MentionEditor({ value, notes, disabled, maxLength, placeholder, 
 
   useEffect(() => {
     const editor = editorRef.current;
-    const pathsChanged = renderedPathsRef.current !== validPaths;
-    renderedPathsRef.current = validPaths;
-    if (!editor || (readEditorValue(editor) === value && !pathsChanged)) {
+    if (!editor || editorMatchesValue(editor, value, validPaths)) {
       setEditorValue(value);
       return;
     }
@@ -302,6 +299,13 @@ function renderEditor(editor: HTMLElement, value: string, validPaths: ReadonlySe
 
 function readEditorValue(editor: HTMLElement): string {
   return [...editor.childNodes].map(readNode).join("");
+}
+
+function editorMatchesValue(editor: HTMLElement, value: string, validPaths: ReadonlySet<string>): boolean {
+  if (readEditorValue(editor) !== value) return false;
+  const expectedPaths = parseMentionDocument(value, validPaths).flatMap((part) => part.type === "mention" ? [part.path] : []);
+  const renderedPaths = [...editor.querySelectorAll<HTMLElement>("[data-mention-chip]")].map((chip) => chip.dataset.mentionPath ?? "");
+  return expectedPaths.length === renderedPaths.length && expectedPaths.every((path, index) => path === renderedPaths[index]);
 }
 
 function readNode(node: Node): string {
